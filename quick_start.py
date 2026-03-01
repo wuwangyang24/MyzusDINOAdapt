@@ -38,16 +38,20 @@ logger.info(f"Creating DINO model with {adaptation_method.upper()}...")
 if adaptation_method == "lora":
     model = DINOWithLoRA(
         backbone_name="dino_vitb16",
-        pretrained=True,
         lora_config=config,
         num_classes=10,  # Change to your number of classes
+        # Optional: Load from local torch.hub source
+        # hub_source="local",
+        # hub_source_dir="/path/to/local/dino/hub",
     )
 else:  # dora
     model = DINOWithDoRA(
         backbone_name="dino_vitb16",
-        pretrained=True,
         dora_config=config,
         num_classes=10,  # Change to your number of classes
+        # Optional: Load from local torch.hub source
+        # hub_source="local",
+        # hub_source_dir="/path/to/local/dino/hub",
     )
 
 # Print trainable parameters

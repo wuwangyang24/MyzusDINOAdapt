@@ -200,8 +200,9 @@ The `Evaluator` class in `src/evaluation/evaluator.py` provides:
 
 ### Model Configuration
 - `backbone`: DINO model type (dino_vitb16, dino_vits14, dino_vitl14)
-- `pretrained`: Load pretrained weights
 - `num_classes`: Number of output classes
+- `hub_source`: Source for loading DINO model ("github" for remote, "local" for local directory)
+- `hub_source_dir`: Path to local DINO torch.hub directory (required when `hub_source` is "local")
 
 ### LoRA Configuration
 - `r`: Rank of low-rank decomposition (typically 4-64)
@@ -261,6 +262,41 @@ trainer = Trainer(
 
 history = trainer.train()
 ```
+
+### Loading Models from Local Torch.Hub
+
+For offline environments or to use a local copy of DINO, you can load models from a local directory:
+
+**Using direct instantiation:**
+
+```python
+from src.models import DINOWithLoRA, LoRAConfig
+
+model = DINOWithLoRA(
+    backbone_name="dino_vitb16",
+    lora_config=LoRAConfig(),
+    hub_source="local",
+    hub_source_dir="/path/to/local/dino/hub",  # Directory containing torch.hub hubconf.py
+    num_classes=10
+)
+```
+
+**Using configuration file:**
+
+```yaml
+model:
+  backbone: "dino_vitb16"
+  num_classes: 10
+  hub_source: "local"
+  hub_source_dir: "/path/to/local/dino/hub"
+```
+
+Then train with:
+```bash
+python scripts/train.py --config configs/default_config.yaml
+```
+
+The local hub directory should have the same structure as the `facebookresearch/dino` repository with a `hubconf.py` file containing model definitions.
 
 ## Understanding LoRA
 

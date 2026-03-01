@@ -117,6 +117,8 @@ def main():
             backbone_name=config["model"]["backbone"],
             lora_config=lora_config,
             num_classes=config["model"]["num_classes"],
+            hub_source=config["model"].get("hub_source", "github"),
+            hub_source_dir=config["model"].get("hub_source_dir"),
         )
     elif adaptation_method == "dora":
         dora_config = DoRAConfig(
@@ -129,6 +131,8 @@ def main():
             backbone_name=config["model"]["backbone"],
             dora_config=dora_config,
             num_classes=config["model"]["num_classes"],
+            hub_source=config["model"].get("hub_source", "github"),
+            hub_source_dir=config["model"].get("hub_source_dir"),
         )
     else:
         raise ValueError(f"Unknown adaptation method: {adaptation_method}")

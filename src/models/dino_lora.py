@@ -20,6 +20,8 @@ class DINOWithLoRA(nn.Module):
         backbone_name: str = "dino_vitb16",
         lora_config: Optional[LoRAConfig] = None,
         num_classes: Optional[int] = None,
+        hub_source: str = "github",
+        hub_source_dir: Optional[str] = None,
     ):
         """
         Initialize DINO with LoRA adaptation.
@@ -28,19 +30,33 @@ class DINOWithLoRA(nn.Module):
             backbone_name: Name of DINO backbone (dino_vitb16, dino_vits14, etc.)
             lora_config: LoRA configuration
             num_classes: Number of output classes (optional, for classification head)
+            hub_source: Source for torch.hub ("github" or "local"), defaults to "github"
+            hub_source_dir: Local directory path when hub_source is "local"
         """
         super().__init__()
         
         # Load DINO backbone
         try:
-            self.backbone = torch.hub.load(
-                'facebookresearch/dino:main',
-                backbone_name
-            )
+            if hub_source.lower() == "local":
+                if hub_source_dir is None:
+                    raise ValueError(
+                        "hub_source_dir must be provided when hub_source='local'"
+                    )
+                self.backbone = torch.hub.load(
+                    hub_source_dir,
+                    backbone_name,
+                    source="local"
+                )
+            else:
+                self.backbone = torch.hub.load(
+                    'facebookresearch/dino:main',
+                    backbone_name,
+                    source="github"
+                )
         except Exception as e:
             raise RuntimeError(
-                f"Failed to load {backbone_name}. "
-                f"Make sure DINO is available via torch.hub. Error: {e}"
+                f"Failed to load {backbone_name} from {hub_source}. "
+                f"Make sure DINO is available. Error: {e}"
             )
         
         self.backbone_name = backbone_name

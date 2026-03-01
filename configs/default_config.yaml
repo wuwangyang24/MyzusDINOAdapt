@@ -8,6 +8,8 @@ adaptation:
 model:
   backbone: "dino_vitb16"  # Options: dino_vitb16, dino_vits14, dino_vitl14
   num_classes: 10  # Number of output classes
+  hub_source: "github"  # Options: github (remote) or local
+  hub_source_dir: null  # Path to local DINO hub directory (required if hub_source is "local")
 
 # LoRA configuration
 lora:
