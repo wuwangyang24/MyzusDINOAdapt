@@ -7,7 +7,6 @@ adaptation:
 # Model configuration
 model:
   backbone: "dino_vitb16"  # Options: dino_vitb16, dino_vits14, dino_vitl14
-  pretrained: true
   num_classes: 10  # Number of output classes
 
 # LoRA configuration

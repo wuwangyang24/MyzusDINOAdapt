@@ -26,7 +26,6 @@ lora_config = LoRAConfig(
 # Create DINO with LoRA
 model = DINOWithLoRA(
     backbone_name="dino_vitb16",
-    pretrained=True,
     lora_config=lora_config,
     num_classes=10  # Your number of classes
 )

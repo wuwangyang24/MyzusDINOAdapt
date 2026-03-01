@@ -57,7 +57,6 @@ lora_config = LoRAConfig(
 # Create DINO with LoRA (no classification head for triple-check)
 model = DINOWithLoRA(
     backbone_name="dino_vitb16",
-    pretrained=True,
     lora_config=lora_config,
     num_classes=None  # Important: no classification head
 )

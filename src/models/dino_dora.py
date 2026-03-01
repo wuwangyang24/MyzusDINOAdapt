@@ -18,7 +18,6 @@ class DINOWithDoRA(nn.Module):
     def __init__(
         self,
         backbone_name: str = "dino_vitb16",
-        pretrained: bool = True,
         dora_config: Optional[DoRAConfig] = None,
         num_classes: Optional[int] = None,
     ):
@@ -27,7 +26,6 @@ class DINOWithDoRA(nn.Module):
         
         Args:
             backbone_name: Name of DINO backbone (dino_vitb16, dino_vits14, etc.)
-            pretrained: Whether to load pretrained weights
             dora_config: DoRA configuration
             num_classes: Number of output classes (optional, for classification head)
         """

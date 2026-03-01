@@ -131,7 +131,6 @@ def main():
         
         model = DINOWithLoRA(
             backbone_name=config["model"]["backbone"],
-            pretrained=config["model"]["pretrained"],
             lora_config=lora_config,
             num_classes=None,  # No classification head for triple-check
         )
@@ -144,7 +143,6 @@ def main():
         
         model = DINOWithDoRA(
             backbone_name=config["model"]["backbone"],
-            pretrained=config["model"]["pretrained"],
             dora_config=dora_config,
             num_classes=None,  # No classification head for triple-check
         )
