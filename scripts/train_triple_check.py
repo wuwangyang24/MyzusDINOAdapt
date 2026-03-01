@@ -1,0 +1,199 @@
+"""Training script for DINO with Triple-Check Loss."""
+
+import argparse
+import torch
+from pathlib import Path
+
+from src.models import DINOWithLoRA, LoRAConfig
+from src.losses import TripleCheckLoss
+from src.data.paired_dataset import PairedBioassayDataset, create_paired_metadata
+from src.data import get_default_transforms
+from src.training.triple_check_trainer import TripleCheckTrainer
+from src.utils import setup_logger, load_config
+from torch.utils.data import DataLoader
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train DINO with LoRA using Triple-Check Loss"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default_config.yaml",
+        help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        required=True,
+        help="Path to paired bioassay data directory"
+    )
+    parser.add_argument(
+        "--val-data-dir",
+        type=str,
+        help="Path to validation data directory (optional)"
+    )
+    parser.add_argument(
+        "--create-metadata",
+        action="store_true",
+        help="Create metadata.json from directory structure"
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        help="Number of training epochs (overrides config)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Batch size (overrides config)"
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        help="Learning rate (overrides config)"
+    )
+    parser.add_argument(
+        "--distance-metric",
+        type=str,
+        choices=["l2", "cosine", "kl"],
+        default="l2",
+        help="Distance metric for triple-check loss"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["cuda", "cpu"],
+        help="Device to train on (overrides config)"
+    )
+    
+    return parser.parse_args()
+
+
+def main():
+    """Main training function."""
+    args = parse_args()
+    
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Override config with command line arguments
+    if args.num_epochs:
+        config["training"]["num_epochs"] = args.num_epochs
+    if args.batch_size:
+        config["training"]["batch_size"] = args.batch_size
+    if args.learning_rate:
+        config["training"]["learning_rate"] = args.learning_rate
+    if args.device:
+        config["device"] = args.device
+    
+    # Setup logger
+    logger = setup_logger(
+        "train_triple_check",
+        log_file=f"{config['logging']['log_dir']}/triple_check_training.log"
+    )
+    
+    logger.info("=" * 50)
+    logger.info("DINO LoRA Triple-Check Training")
+    logger.info("=" * 50)
+    logger.info(f"Configuration: {args.config}")
+    
+    # Set random seed
+    torch.manual_seed(config.get("seed", 42))
+    
+    # Create metadata if needed
+    if args.create_metadata:
+        logger.info("Creating metadata from directory structure...")
+        create_paired_metadata(args.data_dir)
+    
+    # Create model
+    logger.info(f"Creating model: {config['model']['backbone']}")
+    lora_config = LoRAConfig(
+        r=config["lora"]["r"],
+        lora_alpha=config["lora"]["lora_alpha"],
+        lora_dropout=config["lora"]["lora_dropout"],
+        target_modules=config["lora"]["target_modules"],
+    )
+    
+    model = DINOWithLoRA(
+        backbone_name=config["model"]["backbone"],
+        pretrained=config["model"]["pretrained"],
+        lora_config=lora_config,
+        num_classes=None,  # No classification head for triple-check
+    )
+    
+    logger.info("Model created successfully")
+    
+    # Create datasets
+    logger.info(f"Loading paired bioassay data from: {args.data_dir}")
+    transform = get_default_transforms(
+        image_size=config["data"]["image_size"],
+        is_train=True
+    )
+    
+    train_dataset = PairedBioassayDataset(
+        root_dir=args.data_dir,
+        transform=transform
+    )
+    
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=config["training"]["batch_size"],
+        num_workers=config["training"]["num_workers"],
+        shuffle=True,
+        pin_memory=torch.cuda.is_available(),
+    )
+    
+    val_dataloader = None
+    if args.val_data_dir:
+        logger.info(f"Loading validation data from: {args.val_data_dir}")
+        val_transform = get_default_transforms(
+            image_size=config["data"]["image_size"],
+            is_train=False
+        )
+        val_dataset = PairedBioassayDataset(
+            root_dir=args.val_data_dir,
+            transform=val_transform
+        )
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=config["training"]["batch_size"],
+            num_workers=config["training"]["num_workers"],
+            shuffle=False,
+            pin_memory=torch.cuda.is_available(),
+        )
+    
+    # Create loss function
+    loss_fn = TripleCheckLoss(
+        distance_metric=args.distance_metric,
+        temperature=1.0,
+        reduction="mean"
+    )
+    
+    # Create trainer
+    trainer = TripleCheckTrainer(
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        loss_fn=loss_fn,
+        learning_rate=config["training"]["learning_rate"],
+        weight_decay=config["training"]["weight_decay"],
+        num_epochs=config["training"]["num_epochs"],
+        device=config["device"],
+        checkpoint_dir=config["checkpoint"]["save_dir"],
+        log_dir=config["logging"]["log_dir"],
+        save_interval=config["checkpoint"]["save_interval"],
+        wandb_config=config["logging"].get("wandb"),
+    )
+    
+    # Train
+    logger.info("Starting training...")
+    history = trainer.train()
+    
+    logger.info("Training completed!")
+
+
+if __name__ == "__main__":
+    main()
