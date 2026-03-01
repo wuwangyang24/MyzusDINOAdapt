@@ -1,0 +1,49 @@
+"""Default configuration for DINO LoRA training."""
+
+# Model configuration
+model:
+  backbone: "dino_vitb16"  # Options: dino_vitb16, dino_vits14, dino_vitl14
+  pretrained: true
+  num_classes: 10  # Number of output classes
+
+# LoRA configuration
+lora:
+  r: 8  # LoRA rank
+  lora_alpha: 16.0  # Scaling factor
+  lora_dropout: 0.1  # Dropout rate
+  target_modules: ["q_proj", "v_proj"]  # Target modules to adapt
+
+# Training configuration
+training:
+  num_epochs: 10
+  batch_size: 32
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_epochs: 1
+  num_workers: 4
+  gradient_accumulation_steps: 1
+
+# Data configuration
+data:
+  train_dir: "data/train"
+  val_dir: "data/val"
+  image_size: 224
+
+# Optimizer configuration
+optimizer:
+  name: "adamw"  # Options: adamw, sgd
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+# Checkpoint and logging
+checkpoint:
+  save_dir: "checkpoints"
+  save_interval: 1  # Save every N epochs
+  
+logging:
+  log_dir: "logs"
+  tensorboard: true
+
+# Device configuration
+device: "cuda"  # Options: cuda, cpu
+seed: 42

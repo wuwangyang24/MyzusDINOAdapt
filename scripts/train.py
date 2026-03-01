@@ -1,0 +1,156 @@
+"""Training script for DINO with LoRA adaptation."""
+
+import argparse
+import torch
+import yaml
+from pathlib import Path
+
+from src.models import DINOWithLoRA, LoRAConfig
+from src.data import create_dataloader
+from src.training import Trainer
+from src.utils import setup_logger, load_config
+
+
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Train DINO with LoRA adaptation"
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="configs/default_config.yaml",
+        help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--train-dir",
+        type=str,
+        help="Path to training data directory (overrides config)"
+    )
+    parser.add_argument(
+        "--val-dir",
+        type=str,
+        help="Path to validation data directory (overrides config)"
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        help="Number of training epochs (overrides config)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Batch size (overrides config)"
+    )
+    parser.add_argument(
+        "--learning-rate",
+        type=float,
+        help="Learning rate (overrides config)"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        choices=["cuda", "cpu"],
+        help="Device to train on (overrides config)"
+    )
+    
+    return parser.parse_args()
+
+
+def main():
+    """Main training function."""
+    args = parse_args()
+    
+    # Load configuration
+    config = load_config(args.config)
+    
+    # Override config with command line arguments
+    if args.train_dir:
+        config["data"]["train_dir"] = args.train_dir
+    if args.val_dir:
+        config["data"]["val_dir"] = args.val_dir
+    if args.num_epochs:
+        config["training"]["num_epochs"] = args.num_epochs
+    if args.batch_size:
+        config["training"]["batch_size"] = args.batch_size
+    if args.learning_rate:
+        config["training"]["learning_rate"] = args.learning_rate
+    if args.device:
+        config["device"] = args.device
+    
+    # Setup logger
+    logger = setup_logger(
+        "train",
+        log_file=f"{config['logging']['log_dir']}/training.log"
+    )
+    
+    logger.info("=" * 50)
+    logger.info("DINO LoRA Training")
+    logger.info("=" * 50)
+    logger.info(f"Configuration: {args.config}")
+    
+    # Set random seed
+    torch.manual_seed(config.get("seed", 42))
+    
+    # Create model
+    logger.info(f"Creating model: {config['model']['backbone']}")
+    lora_config = LoRAConfig(
+        r=config["lora"]["r"],
+        lora_alpha=config["lora"]["lora_alpha"],
+        lora_dropout=config["lora"]["lora_dropout"],
+        target_modules=config["lora"]["target_modules"],
+    )
+    
+    model = DINOWithLoRA(
+        backbone_name=config["model"]["backbone"],
+        pretrained=config["model"]["pretrained"],
+        lora_config=lora_config,
+        num_classes=config["model"]["num_classes"],
+    )
+    
+    logger.info("Model created successfully")
+    
+    # Create data loaders
+    logger.info(f"Loading training data from: {config['data']['train_dir']}")
+    train_dataloader = create_dataloader(
+        config["data"]["train_dir"],
+        batch_size=config["training"]["batch_size"],
+        num_workers=config["training"]["num_workers"],
+        is_train=True,
+        image_size=config["data"]["image_size"],
+    )
+    
+    val_dataloader = None
+    if config["data"].get("val_dir"):
+        logger.info(f"Loading validation data from: {config['data']['val_dir']}")
+        val_dataloader = create_dataloader(
+            config["data"]["val_dir"],
+            batch_size=config["training"]["batch_size"],
+            num_workers=config["training"]["num_workers"],
+            is_train=False,
+            image_size=config["data"]["image_size"],
+        )
+    
+    # Create trainer
+    trainer = Trainer(
+        model=model,
+        train_dataloader=train_dataloader,
+        val_dataloader=val_dataloader,
+        learning_rate=config["training"]["learning_rate"],
+        weight_decay=config["training"]["weight_decay"],
+        num_epochs=config["training"]["num_epochs"],
+        device=config["device"],
+        checkpoint_dir=config["checkpoint"]["save_dir"],
+        log_dir=config["logging"]["log_dir"],
+        save_interval=config["checkpoint"]["save_interval"],
+    )
+    
+    # Train
+    logger.info("Starting training...")
+    history = trainer.train()
+    
+    logger.info("Training completed!")
+
+
+if __name__ == "__main__":
+    main()
