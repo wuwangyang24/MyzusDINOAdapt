@@ -24,7 +24,7 @@ dora:
 # Training configuration
 training:
   num_epochs: 10
-  batch_size: 32
+  batch_size: 128
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
   warmup_epochs: 1
