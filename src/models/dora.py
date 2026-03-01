@@ -12,13 +12,8 @@ class DoRAConfig:
     """Configuration for DoRA adaptation."""
     r: int = 8  # Rank of low-rank decomposition
     dora_alpha: float = 16.0  # Scaling factor
-    target_modules: list = None  # Target modules to apply DoRA
     dora_dropout: float = 0.1  # Dropout rate for DoRA layers
     bias: str = "none"  # Bias handling: "none", "all", "dora_only"
-    
-    def __post_init__(self):
-        if self.target_modules is None:
-            self.target_modules = ["q_proj", "v_proj"]
 
 
 class DoRALinear(nn.Module):
@@ -93,40 +88,3 @@ class DoRALinear(nn.Module):
         out = out + dora_scaled
         
         return out
-
-
-def get_peft_model_dora(model: nn.Module, config: DoRAConfig) -> nn.Module:
-    """
-    Convert a model to use DoRA adaptation.
-    
-    Args:
-        model: Original model
-        config: DoRA configuration
-        
-    Returns:
-        Model with DoRA layers
-    """
-    for name, module in model.named_modules():
-        for target in config.target_modules:
-            if target in name and isinstance(module, nn.Linear):
-                # Replace linear layer with DoRA linear layer
-                parent_name, child_name = name.rsplit(".", 1)
-                parent = dict(model.named_modules())[parent_name]
-                
-                dora_linear = DoRALinear(
-                    module.in_features,
-                    module.out_features,
-                    r=config.r,
-                    dora_alpha=config.dora_alpha,
-                    dora_dropout=config.dora_dropout,
-                    bias=module.bias is not None,
-                )
-                
-                # Copy original weights
-                dora_linear.linear.weight.data = module.weight.data.clone()
-                if module.bias is not None:
-                    dora_linear.linear.bias.data = module.bias.data.clone()
-                
-                setattr(parent, child_name, dora_linear)
-    
-    return model

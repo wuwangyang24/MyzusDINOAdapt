@@ -68,10 +68,6 @@ class DINOWithLoRA(nn.Module):
         # Replace linear layers with LoRA layers in attention blocks
         self._replace_attention_layers()
         self._replace_mlp_layers()
-        
-        # Unfreeze normalization layers if in target modules
-        if any('norm' in m for m in self.lora_config.target_modules):
-            self._unfreeze_normalization_layers()
     
     def _replace_attention_layers(self) -> None:
         """Replace attention projection layers with LoRA."""
@@ -126,12 +122,6 @@ class DINOWithLoRA(nn.Module):
                     module.fc1.linear.weight.data = original_fc1.weight.data.clone()
                     if original_fc1.bias is not None:
                         module.fc1.linear.bias.data = original_fc1.bias.data.clone()
-    
-    def _unfreeze_normalization_layers(self) -> None:
-        """Unfreeze and make trainable all normalization layers."""
-        for name, param in self.backbone.named_parameters():
-            if 'norm' in name:
-                param.requires_grad = True
     
     def _add_classification_head(self, num_classes: int) -> None:
         """Add classification head on top of DINO backbone."""

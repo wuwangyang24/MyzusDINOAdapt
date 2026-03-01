@@ -127,7 +127,6 @@ def main():
             r=config["lora"]["r"],
             lora_alpha=config["lora"]["lora_alpha"],
             lora_dropout=config["lora"]["lora_dropout"],
-            target_modules=config["lora"]["target_modules"],
         )
         
         model = DINOWithLoRA(
@@ -141,7 +140,6 @@ def main():
             r=config["dora"]["r"],
             dora_alpha=config["dora"]["dora_alpha"],
             dora_dropout=config["dora"]["dora_dropout"],
-            target_modules=config["dora"]["target_modules"],
         )
         
         model = DINOWithDoRA(

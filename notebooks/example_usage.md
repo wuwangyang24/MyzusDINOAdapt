@@ -21,7 +21,6 @@ lora_config = LoRAConfig(
     r=8,
     lora_alpha=16.0,
     lora_dropout=0.1,
-    target_modules=["q_proj", "v_proj"]
 )
 
 # Create DINO with LoRA

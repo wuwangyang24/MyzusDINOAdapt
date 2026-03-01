@@ -52,7 +52,6 @@ lora_config = LoRAConfig(
     r=8,
     lora_alpha=16.0,
     lora_dropout=0.1,
-    target_modules=["q_proj", "v_proj", "norm1", "norm2"]
 )
 
 # Create DINO with LoRA (no classification head for triple-check)

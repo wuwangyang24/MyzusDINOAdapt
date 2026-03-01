@@ -159,7 +159,6 @@ The framework includes a complete LoRA implementation in `src/models/lora.py`:
 
 - **LoRALinear**: Low-rank adapted linear layer that replaces standard linear operations
 - **LoRAConfig**: Configuration class for LoRA hyperparameters
-- **get_peft_model**: Utility function to apply LoRA to existing models
 
 ### DoRA Implementation
 
@@ -167,7 +166,6 @@ The framework also includes DoRA (Dimensional and Rank Adaptation) in `src/model
 
 - **DoRALinear**: Dimensional and rank adapted linear layer combining low-rank decomposition with dimensional scaling
 - **DoRAConfig**: Configuration class for DoRA hyperparameters
-- **get_peft_model_dora**: Utility function to apply DoRA to existing models
 
 DoRA extends LoRA by adding learnable magnitude scaling vectors for each output dimension, which can improve adaptation performance.
 
@@ -209,7 +207,6 @@ The `Evaluator` class in `src/evaluation/evaluator.py` provides:
 - `r`: Rank of low-rank decomposition (typically 4-64)
 - `lora_alpha`: Scaling factor for LoRA outputs
 - `lora_dropout`: Dropout rate in LoRA layers
-- `target_modules`: Modules to apply LoRA (default: attention layers)
 
 ### Training Configuration
 - `num_epochs`: Number of training epochs

@@ -12,13 +12,8 @@ class LoRAConfig:
     """Configuration for LoRA adaptation."""
     r: int = 8  # Rank of low-rank decomposition
     lora_alpha: float = 16.0  # Scaling factor
-    target_modules: list = None  # Target modules to apply LoRA
     lora_dropout: float = 0.1  # Dropout rate for LoRA layers
     bias: str = "none"  # Bias handling: "none", "all", "lora_only"
-    
-    def __post_init__(self):
-        if self.target_modules is None:
-            self.target_modules = ["q_proj", "v_proj"]
 
 
 class LoRALinear(nn.Module):
@@ -88,40 +83,3 @@ class LoRALinear(nn.Module):
         out = out + self.scaling * lora_out
         
         return out
-
-
-def get_peft_model(model: nn.Module, config: LoRAConfig) -> nn.Module:
-    """
-    Convert a model to use LoRA adaptation.
-    
-    Args:
-        model: Original model
-        config: LoRA configuration
-        
-    Returns:
-        Model with LoRA layers
-    """
-    for name, module in model.named_modules():
-        for target in config.target_modules:
-            if target in name and isinstance(module, nn.Linear):
-                # Replace linear layer with LoRA linear layer
-                parent_name, child_name = name.rsplit(".", 1)
-                parent = dict(model.named_modules())[parent_name]
-                
-                lora_linear = LoRALinear(
-                    module.in_features,
-                    module.out_features,
-                    r=config.r,
-                    lora_alpha=config.lora_alpha,
-                    lora_dropout=config.lora_dropout,
-                    bias=module.bias is not None,
-                )
-                
-                # Copy original weights
-                lora_linear.linear.weight.data = module.weight.data.clone()
-                if module.bias is not None:
-                    lora_linear.linear.bias.data = module.bias.data.clone()
-                
-                setattr(parent, child_name, lora_linear)
-    
-    return model

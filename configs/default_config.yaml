@@ -15,14 +15,12 @@ lora:
   r: 8  # LoRA rank
   lora_alpha: 16.0  # Scaling factor
   lora_dropout: 0.1  # Dropout rate
-  target_modules: ["q_proj", "v_proj", "norm1", "norm2"]  # Target modules to adapt (attention, MLP, normalization)
 
 # DoRA configuration
 dora:
   r: 8  # DoRA rank
   dora_alpha: 16.0  # Scaling factor
   dora_dropout: 0.1  # Dropout rate
-  target_modules: ["q_proj", "v_proj", "norm1", "norm2"]  # Target modules to adapt (attention, MLP, normalization)
 
 # Training configuration
 training:
