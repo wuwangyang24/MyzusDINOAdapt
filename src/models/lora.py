@@ -59,6 +59,10 @@ class LoRALinear(nn.Module):
         self.lora_a = nn.Linear(in_features, r, bias=False)
         self.lora_b = nn.Linear(r, out_features, bias=False)
         
+        # Ensure LoRA parameters are trainable
+        self.lora_a.weight.requires_grad = True
+        self.lora_b.weight.requires_grad = True
+        
         # Initialize LoRA weights
         nn.init.kaiming_uniform_(self.lora_a.weight, a=5 ** 0.5)
         nn.init.zeros_(self.lora_b.weight)

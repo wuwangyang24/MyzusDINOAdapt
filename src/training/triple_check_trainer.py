@@ -124,7 +124,7 @@ class TripleCheckTrainer:
         Returns:
             Dictionary with epoch statistics
         """
-        self.model.eval()  # Keep backbone frozen
+        self.model.train()  # Enable training mode for LoRA layers and dropout
         
         total_loss = 0.0
         

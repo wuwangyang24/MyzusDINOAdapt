@@ -93,21 +93,20 @@ class DINOWithLoRA(nn.Module):
                     if original_qkv.bias is not None:
                         module.qkv.linear.bias.data = original_qkv.bias.data.clone()
             
-            if hasattr(module, 'proj') and isinstance(module, type(module)):
+            if hasattr(module, 'proj') and isinstance(module.proj, nn.Linear):
                 # Replace output projection
-                if isinstance(module.proj, nn.Linear):
-                    original_proj = module.proj
-                    module.proj = LoRALinear(
-                        original_proj.in_features,
-                        original_proj.out_features,
-                        r=self.lora_config.r,
-                        lora_alpha=self.lora_config.lora_alpha,
-                        lora_dropout=self.lora_config.lora_dropout,
-                        bias=original_proj.bias is not None,
-                    )
-                    module.proj.linear.weight.data = original_proj.weight.data.clone()
-                    if original_proj.bias is not None:
-                        module.proj.linear.bias.data = original_proj.bias.data.clone()
+                original_proj = module.proj
+                module.proj = LoRALinear(
+                    original_proj.in_features,
+                    original_proj.out_features,
+                    r=self.lora_config.r,
+                    lora_alpha=self.lora_config.lora_alpha,
+                    lora_dropout=self.lora_config.lora_dropout,
+                    bias=original_proj.bias is not None,
+                )
+                module.proj.linear.weight.data = original_proj.weight.data.clone()
+                if original_proj.bias is not None:
+                    module.proj.linear.bias.data = original_proj.bias.data.clone()
     
     def _replace_mlp_layers(self) -> None:
         """Replace MLP layers with LoRA."""
