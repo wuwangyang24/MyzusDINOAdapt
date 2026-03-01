@@ -22,6 +22,7 @@ class DINOWithLoRA(nn.Module):
         num_classes: Optional[int] = None,
         hub_source: str = "github",
         hub_source_dir: Optional[str] = None,
+        weights_path: Optional[str] = None,
     ):
         """
         Initialize DINO with LoRA adaptation.
@@ -32,6 +33,7 @@ class DINOWithLoRA(nn.Module):
             num_classes: Number of output classes (optional, for classification head)
             hub_source: Source for torch.hub ("github" or "local"), defaults to "github"
             hub_source_dir: Local directory path when hub_source is "local"
+            weights_path: Path to pretrained weights file for local source loading
         """
         super().__init__()
         
@@ -45,13 +47,13 @@ class DINOWithLoRA(nn.Module):
                 self.backbone = torch.hub.load(
                     hub_source_dir,
                     backbone_name,
-                    source="local"
+                    source="local",
+                    weights=weights_path
                 )
             else:
                 self.backbone = torch.hub.load(
                     'facebookresearch/dino:main',
                     backbone_name,
-                    source="github"
                 )
         except Exception as e:
             raise RuntimeError(

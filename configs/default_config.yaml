@@ -10,6 +10,7 @@ model:
   num_classes: 10  # Number of output classes
   hub_source: "github"  # Options: github (remote) or local
   hub_source_dir: null  # Path to local DINO hub directory (required if hub_source is "local")
+  weights_path: null  # Path to pretrained weights file (optional, for local source loading)
 
 # LoRA configuration
 lora:

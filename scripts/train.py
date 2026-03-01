@@ -119,6 +119,7 @@ def main():
             num_classes=config["model"]["num_classes"],
             hub_source=config["model"].get("hub_source", "github"),
             hub_source_dir=config["model"].get("hub_source_dir"),
+            weights_path=config["model"].get("weights_path"),
         )
     elif adaptation_method == "dora":
         dora_config = DoRAConfig(
@@ -133,6 +134,7 @@ def main():
             num_classes=config["model"]["num_classes"],
             hub_source=config["model"].get("hub_source", "github"),
             hub_source_dir=config["model"].get("hub_source_dir"),
+            weights_path=config["model"].get("weights_path"),
         )
     else:
         raise ValueError(f"Unknown adaptation method: {adaptation_method}")

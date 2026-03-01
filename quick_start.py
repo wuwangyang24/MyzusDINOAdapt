@@ -43,6 +43,7 @@ if adaptation_method == "lora":
         # Optional: Load from local torch.hub source
         # hub_source="local",
         # hub_source_dir="/path/to/local/dino/hub",
+        # weights_path="/path/to/weights.pth",  # Path to pretrained weights
     )
 else:  # dora
     model = DINOWithDoRA(
@@ -52,6 +53,7 @@ else:  # dora
         # Optional: Load from local torch.hub source
         # hub_source="local",
         # hub_source_dir="/path/to/local/dino/hub",
+        # weights_path="/path/to/weights.pth",  # Path to pretrained weights
     )
 
 # Print trainable parameters
