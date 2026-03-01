@@ -43,6 +43,13 @@ checkpoint:
 logging:
   log_dir: "logs"
   tensorboard: true
+  wandb:
+    enabled: true
+    project: "dino-lora"  # W&B project name
+    entity: null  # W&B username or team name (null = default)
+    name: null  # Run name (auto-generated if null)
+    tags: ["dino", "lora"]
+    notes: "DINO LoRA adaptation training"
 
 # Device configuration
 device: "cuda"  # Options: cuda, cpu

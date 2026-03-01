@@ -143,6 +143,7 @@ def main():
         checkpoint_dir=config["checkpoint"]["save_dir"],
         log_dir=config["logging"]["log_dir"],
         save_interval=config["checkpoint"]["save_interval"],
+        wandb_config=config["logging"].get("wandb"),
     )
     
     # Train

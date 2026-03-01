@@ -12,6 +12,12 @@ from torch.utils.tensorboard import SummaryWriter
 from src.utils import setup_logger
 from src.models import DINOWithLoRA
 
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
 
 class Trainer:
     """Trainer for DINO with LoRA adaptation."""
@@ -28,6 +34,7 @@ class Trainer:
         checkpoint_dir: str = "checkpoints",
         log_dir: str = "logs",
         save_interval: int = 1,
+        wandb_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize trainer.
@@ -43,6 +50,7 @@ class Trainer:
             checkpoint_dir: Directory to save checkpoints
             log_dir: Directory for logs
             save_interval: Epoch interval for saving checkpoints
+            wandb_config: W&B configuration dictionary
         """
         self.model = model.to(device)
         self.train_dataloader = train_dataloader
@@ -62,6 +70,31 @@ class Trainer:
             "Trainer",
             log_file=str(self.log_dir / "training.log")
         )
+        
+        # Setup W&B
+        self.wandb_enabled = False
+        if WANDB_AVAILABLE and wandb_config and wandb_config.get("enabled", False):
+            try:
+                wandb.init(
+                    project=wandb_config.get("project", "dino-lora"),
+                    entity=wandb_config.get("entity"),
+                    name=wandb_config.get("name"),
+                    tags=wandb_config.get("tags", []),
+                    notes=wandb_config.get("notes", ""),
+                    config={
+                        "learning_rate": learning_rate,
+                        "weight_decay": weight_decay,
+                        "num_epochs": num_epochs,
+                        "batch_size": train_dataloader.batch_size,
+                    }
+                )
+                self.wandb_enabled = True
+                self.logger.info("W&B logging enabled")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize W&B: {e}")
+        elif wandb_config and wandb_config.get("enabled", False) and not WANDB_AVAILABLE:
+            self.logger.warning("W&B enabled in config but wandb not installed. "
+                              "Install with: pip install wandb")
         
         # Setup optimizer and loss
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
@@ -121,6 +154,14 @@ class Trainer:
                     loss.item(),
                     self.global_step
                 )
+                
+                # Log to W&B
+                if self.wandb_enabled:
+                    wandb.log({
+                        "training/loss": loss.item(),
+                        "training/batch": batch_idx,
+                        "training/global_step": self.global_step,
+                    })
             
             if batch_idx % 100 == 0:
                 self.logger.info(
@@ -230,6 +271,14 @@ class Trainer:
             history["train_loss"].append(train_stats["loss"])
             history["train_accuracy"].append(train_stats["accuracy"])
             
+            # Log to W&B
+            if self.wandb_enabled:
+                wandb.log({
+                    "epoch": epoch,
+                    "training/epoch_loss": train_stats["loss"],
+                    "training/epoch_accuracy": train_stats["accuracy"],
+                })
+            
             # Validate
             if self.val_dataloader is not None:
                 val_stats = self.validate()
@@ -240,6 +289,14 @@ class Trainer:
                 
                 self.writer.add_scalar("validation/loss", val_stats["loss"], epoch)
                 self.writer.add_scalar("validation/accuracy", val_stats["accuracy"], epoch)
+                
+                # Log to W&B
+                if self.wandb_enabled:
+                    wandb.log({
+                        "validation/loss": val_stats["loss"],
+                        "validation/accuracy": val_stats["accuracy"],
+                        "epoch": epoch,
+                    })
                 
                 history["val_loss"].append(val_stats["loss"])
                 history["val_accuracy"].append(val_stats["accuracy"])
@@ -258,5 +315,9 @@ class Trainer:
         
         self.logger.info("Training completed!")
         self.writer.close()
+        
+        # Finish W&B run
+        if self.wandb_enabled:
+            wandb.finish()
         
         return history
