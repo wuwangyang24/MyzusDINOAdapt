@@ -1,10 +1,10 @@
-"""Training script for DINO with Triple-Check Loss."""
+"""Training script for DINO with Triple-Check Loss and LoRA/DoRA adaptation."""
 
 import argparse
 import torch
 from pathlib import Path
 
-from src.models import DINOWithLoRA, LoRAConfig
+from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss
 from src.data.paired_dataset import PairedBioassayDataset, create_paired_metadata
 from src.data import get_default_transforms
@@ -16,13 +16,19 @@ from torch.utils.data import DataLoader
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train DINO with LoRA using Triple-Check Loss"
+        description="Train DINO with LoRA/DoRA using Triple-Check Loss"
     )
     parser.add_argument(
         "--config",
         type=str,
         default="configs/default_config.yaml",
         help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        choices=["lora", "dora"],
+        help="Adaptation method (overrides config)"
     )
     parser.add_argument(
         "--data-dir",
@@ -80,6 +86,8 @@ def main():
     config = load_config(args.config)
     
     # Override config with command line arguments
+    if args.method:
+        config["adaptation"]["method"] = args.method
     if args.num_epochs:
         config["training"]["num_epochs"] = args.num_epochs
     if args.batch_size:
@@ -95,10 +103,13 @@ def main():
         log_file=f"{config['logging']['log_dir']}/triple_check_training.log"
     )
     
+    adaptation_method = config["adaptation"]["method"]
+    
     logger.info("=" * 50)
-    logger.info("DINO LoRA Triple-Check Training")
+    logger.info(f"DINO {adaptation_method.upper()} Triple-Check Training")
     logger.info("=" * 50)
     logger.info(f"Configuration: {args.config}")
+    logger.info(f"Adaptation Method: {adaptation_method}")
     
     # Set random seed
     torch.manual_seed(config.get("seed", 42))
@@ -108,21 +119,39 @@ def main():
         logger.info("Creating metadata from directory structure...")
         create_paired_metadata(args.data_dir)
     
-    # Create model
-    logger.info(f"Creating model: {config['model']['backbone']}")
-    lora_config = LoRAConfig(
-        r=config["lora"]["r"],
-        lora_alpha=config["lora"]["lora_alpha"],
-        lora_dropout=config["lora"]["lora_dropout"],
-        target_modules=config["lora"]["target_modules"],
-    )
+    # Create model based on adaptation method
+    logger.info(f"Creating model: {config['model']['backbone']} with {adaptation_method.upper()}")
     
-    model = DINOWithLoRA(
-        backbone_name=config["model"]["backbone"],
-        pretrained=config["model"]["pretrained"],
-        lora_config=lora_config,
-        num_classes=None,  # No classification head for triple-check
-    )
+    if adaptation_method == "lora":
+        lora_config = LoRAConfig(
+            r=config["lora"]["r"],
+            lora_alpha=config["lora"]["lora_alpha"],
+            lora_dropout=config["lora"]["lora_dropout"],
+            target_modules=config["lora"]["target_modules"],
+        )
+        
+        model = DINOWithLoRA(
+            backbone_name=config["model"]["backbone"],
+            pretrained=config["model"]["pretrained"],
+            lora_config=lora_config,
+            num_classes=None,  # No classification head for triple-check
+        )
+    elif adaptation_method == "dora":
+        dora_config = DoRAConfig(
+            r=config["dora"]["r"],
+            dora_alpha=config["dora"]["dora_alpha"],
+            dora_dropout=config["dora"]["dora_dropout"],
+            target_modules=config["dora"]["target_modules"],
+        )
+        
+        model = DINOWithDoRA(
+            backbone_name=config["model"]["backbone"],
+            pretrained=config["model"]["pretrained"],
+            dora_config=dora_config,
+            num_classes=None,  # No classification head for triple-check
+        )
+    else:
+        raise ValueError(f"Unknown adaptation method: {adaptation_method}")
     
     logger.info("Model created successfully")
     

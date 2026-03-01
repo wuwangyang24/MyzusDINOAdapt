@@ -3,7 +3,7 @@
 
 import torch
 from pathlib import Path
-from src.models import DINOWithLoRA, LoRAConfig
+from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.data import create_dataloader
 from src.training import Trainer
 from src.evaluation import Evaluator
@@ -12,22 +12,43 @@ from src.utils import setup_logger
 # Setup
 logger = setup_logger("quick_start")
 
-# 1. Configure LoRA
-logger.info("Setting up LoRA configuration...")
-lora_config = LoRAConfig(
-    r=8,
-    lora_alpha=16.0,
-    lora_dropout=0.1,
-)
+# Choose adaptation method: "lora" or "dora"
+adaptation_method = "lora"
+
+# 1. Configure adaptation method
+if adaptation_method == "lora":
+    logger.info("Setting up LoRA configuration...")
+    config = LoRAConfig(
+        r=8,
+        lora_alpha=16.0,
+        lora_dropout=0.1,
+    )
+elif adaptation_method == "dora":
+    logger.info("Setting up DoRA configuration...")
+    config = DoRAConfig(
+        r=8,
+        dora_alpha=16.0,
+        dora_dropout=0.1,
+    )
+else:
+    raise ValueError(f"Unknown adaptation method: {adaptation_method}")
 
 # 2. Create model
-logger.info("Creating DINO model with LoRA...")
-model = DINOWithLoRA(
-    backbone_name="dino_vitb16",
-    pretrained=True,
-    lora_config=lora_config,
-    num_classes=10,  # Change to your number of classes
-)
+logger.info(f"Creating DINO model with {adaptation_method.upper()}...")
+if adaptation_method == "lora":
+    model = DINOWithLoRA(
+        backbone_name="dino_vitb16",
+        pretrained=True,
+        lora_config=config,
+        num_classes=10,  # Change to your number of classes
+    )
+else:  # dora
+    model = DINOWithDoRA(
+        backbone_name="dino_vitb16",
+        pretrained=True,
+        dora_config=config,
+        num_classes=10,  # Change to your number of classes
+    )
 
 # Print trainable parameters
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

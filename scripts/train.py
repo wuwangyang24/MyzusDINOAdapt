@@ -1,11 +1,11 @@
-"""Training script for DINO with LoRA adaptation."""
+"""Training script for DINO with LoRA/DoRA adaptation."""
 
 import argparse
 import torch
 import yaml
 from pathlib import Path
 
-from src.models import DINOWithLoRA, LoRAConfig
+from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.data import create_dataloader
 from src.training import Trainer
 from src.utils import setup_logger, load_config
@@ -14,13 +14,19 @@ from src.utils import setup_logger, load_config
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Train DINO with LoRA adaptation"
+        description="Train DINO with LoRA/DoRA adaptation"
     )
     parser.add_argument(
         "--config",
         type=str,
         default="configs/default_config.yaml",
         help="Path to configuration file"
+    )
+    parser.add_argument(
+        "--method",
+        type=str,
+        choices=["lora", "dora"],
+        help="Adaptation method (overrides config)"
     )
     parser.add_argument(
         "--train-dir",
@@ -65,6 +71,8 @@ def main():
     config = load_config(args.config)
     
     # Override config with command line arguments
+    if args.method:
+        config["adaptation"]["method"] = args.method
     if args.train_dir:
         config["data"]["train_dir"] = args.train_dir
     if args.val_dir:
@@ -84,29 +92,50 @@ def main():
         log_file=f"{config['logging']['log_dir']}/training.log"
     )
     
+    adaptation_method = config["adaptation"]["method"]
+    
     logger.info("=" * 50)
-    logger.info("DINO LoRA Training")
+    logger.info(f"DINO {adaptation_method.upper()} Training")
     logger.info("=" * 50)
     logger.info(f"Configuration: {args.config}")
+    logger.info(f"Adaptation Method: {adaptation_method}")
     
     # Set random seed
     torch.manual_seed(config.get("seed", 42))
     
-    # Create model
-    logger.info(f"Creating model: {config['model']['backbone']}")
-    lora_config = LoRAConfig(
-        r=config["lora"]["r"],
-        lora_alpha=config["lora"]["lora_alpha"],
-        lora_dropout=config["lora"]["lora_dropout"],
-        target_modules=config["lora"]["target_modules"],
-    )
+    # Create model based on adaptation method
+    logger.info(f"Creating model: {config['model']['backbone']} with {adaptation_method.upper()}")
     
-    model = DINOWithLoRA(
-        backbone_name=config["model"]["backbone"],
-        pretrained=config["model"]["pretrained"],
-        lora_config=lora_config,
-        num_classes=config["model"]["num_classes"],
-    )
+    if adaptation_method == "lora":
+        lora_config = LoRAConfig(
+            r=config["lora"]["r"],
+            lora_alpha=config["lora"]["lora_alpha"],
+            lora_dropout=config["lora"]["lora_dropout"],
+            target_modules=config["lora"]["target_modules"],
+        )
+        
+        model = DINOWithLoRA(
+            backbone_name=config["model"]["backbone"],
+            pretrained=config["model"]["pretrained"],
+            lora_config=lora_config,
+            num_classes=config["model"]["num_classes"],
+        )
+    elif adaptation_method == "dora":
+        dora_config = DoRAConfig(
+            r=config["dora"]["r"],
+            dora_alpha=config["dora"]["dora_alpha"],
+            dora_dropout=config["dora"]["dora_dropout"],
+            target_modules=config["dora"]["target_modules"],
+        )
+        
+        model = DINOWithDoRA(
+            backbone_name=config["model"]["backbone"],
+            pretrained=config["model"]["pretrained"],
+            dora_config=dora_config,
+            num_classes=config["model"]["num_classes"],
+        )
+    else:
+        raise ValueError(f"Unknown adaptation method: {adaptation_method}")
     
     logger.info("Model created successfully")
     

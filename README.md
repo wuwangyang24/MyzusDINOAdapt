@@ -1,10 +1,10 @@
-# DINO LoRA Adaptation Framework
+# DINO LoRA/DoRA Adaptation Framework
 
-A comprehensive framework for adapting DINO (Dense Interaction Neural Net Objects) models using Low-Rank Adaptation (LoRA) for efficient fine-tuning on custom datasets.
+A comprehensive framework for adapting DINO (Dense Interaction Neural Net Objects) models using Low-Rank Adaptation (LoRA) and Dimensional and Rank Adaptation (DoRA) for efficient fine-tuning on custom datasets.
 
 ## Features
 
-- **LoRA Adaptation**: Efficient parameter-efficient fine-tuning using low-rank decomposition
+- **LoRA & DoRA Adaptation**: Efficient parameter-efficient fine-tuning using low-rank decomposition and dimensional scaling
 - **DINO Integration**: Built-in support for DINO vision transformers (ViT-B/16, ViT-S/14, ViT-L/14)
 - **Complete Pipeline**: End-to-end training, evaluation, and feature extraction
 - **Flexible Configuration**: YAML-based configuration for easy experimentation
@@ -16,9 +16,11 @@ A comprehensive framework for adapting DINO (Dense Interaction Neural Net Object
 ```
 .
 ├── src/
-│   ├── models/              # Model definitions and LoRA implementations
+│   ├── models/              # Model definitions and adaptation implementations
 │   │   ├── lora.py         # Core LoRA modules
-│   │   └── dino_lora.py    # DINO with LoRA wrapper
+│   │   ├── dino_lora.py    # DINO with LoRA wrapper
+│   │   ├── dora.py         # Core DoRA modules
+│   │   └── dino_dora.py    # DINO with DoRA wrapper
 │   ├── data/               # Data loading and preprocessing
 │   │   ├── dataset.py      # Dataset class
 │   │   └── dataloader.py   # DataLoader utilities
@@ -32,7 +34,7 @@ A comprehensive framework for adapting DINO (Dense Interaction Neural Net Object
 ├── configs/                # Configuration files
 │   └── default_config.yaml # Default training configuration
 ├── scripts/                # Training and evaluation scripts
-│   ├── train.py           # Training script
+│   ├── train.py           # Training script (supports both LoRA and DoRA)
 │   └── evaluate.py        # Evaluation script
 ├── notebooks/             # Jupyter notebooks for experiments
 ├── requirements.txt       # Python dependencies
@@ -107,6 +109,7 @@ training:
 
 ### 3. Train the Model
 
+**Using LoRA (default):**
 ```bash
 python scripts/train.py \
   --config configs/default_config.yaml \
@@ -116,11 +119,33 @@ python scripts/train.py \
   --batch-size 32
 ```
 
+**Using DoRA:**
+```bash
+python scripts/train.py \
+  --config configs/default_config.yaml \
+  --method dora \
+  --train-dir data/train \
+  --val-dir data/val \
+  --num-epochs 20 \
+  --batch-size 32
+```
+
+Or modify the config file to set `adaptation.method: dora`.
+
 ### 4. Evaluate the Model
 
 ```bash
+# For LoRA model
 python scripts/evaluate.py \
   --config configs/default_config.yaml \
+  --checkpoint checkpoints/best_model.pt \
+  --data-dir data/val \
+  --batch-size 32
+
+# For DoRA model
+python scripts/evaluate.py \
+  --config configs/default_config.yaml \
+  --method dora \
   --checkpoint checkpoints/best_model.pt \
   --data-dir data/val \
   --batch-size 32
@@ -136,13 +161,26 @@ The framework includes a complete LoRA implementation in `src/models/lora.py`:
 - **LoRAConfig**: Configuration class for LoRA hyperparameters
 - **get_peft_model**: Utility function to apply LoRA to existing models
 
-### DINO with LoRA
+### DoRA Implementation
 
-`src/models/dino_lora.py` provides `DINOWithLoRA` class that:
-- Loads pretrained DINO backbones
-- Applies LoRA to attention and MLP layers
-- Supports adding classification heads for downstream tasks
-- Provides trainable parameter utilities
+The framework also includes DoRA (Dimensional and Rank Adaptation) in `src/models/dora.py`:
+
+- **DoRALinear**: Dimensional and rank adapted linear layer combining low-rank decomposition with dimensional scaling
+- **DoRAConfig**: Configuration class for DoRA hyperparameters
+- **get_peft_model_dora**: Utility function to apply DoRA to existing models
+
+DoRA extends LoRA by adding learnable magnitude scaling vectors for each output dimension, which can improve adaptation performance.
+
+### DINO with LoRA/DoRA
+
+- `src/models/dino_lora.py` provides `DINOWithLoRA` class
+- `src/models/dino_dora.py` provides `DINOWithDoRA` class
+
+Both classes:
+- Load pretrained DINO backbones
+- Apply the respective adaptation method to attention and MLP layers
+- Support adding classification heads for downstream tasks
+- Provide trainable parameter utilities
 
 ### Training
 
