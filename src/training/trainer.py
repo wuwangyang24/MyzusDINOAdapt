@@ -137,6 +137,11 @@ class TripleCheckTrainer:
         # Training stats
         self.global_step = 0
         self.best_val_loss = float('inf')
+
+    @property
+    def _backbone(self):
+        """Return backbone, unwrapping DataParallel if necessary."""
+        return self.model.module.backbone if self.multi_gpu else self.model.backbone
     
     @staticmethod
     def _setup_device(
@@ -211,10 +216,11 @@ class TripleCheckTrainer:
             # NOTE: Do NOT use torch.no_grad() here — gradients must flow
             # through the LoRA layers so their parameters are updated.
             # Frozen backbone params have requires_grad=False and won't accumulate gradients.
-            feat_t1 = self.model.backbone(img_t1)
-            feat_u1 = self._process_features(img_u1, self.model.backbone)
-            feat_t2 = self.model.backbone(img_t2)
-            feat_u2 = self._process_features(img_u2, self.model.backbone)
+            backbone = self._backbone
+            feat_t1 = backbone(img_t1)
+            feat_u1 = self._process_features(img_u1, backbone)
+            feat_t2 = backbone(img_t2)
+            feat_u2 = self._process_features(img_u2, backbone)
             
             # Compute loss
             loss = self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
@@ -311,10 +317,11 @@ class TripleCheckTrainer:
             img_u2 = img_u2.to(self.device)
             
             # Extract features
-            feat_t1 = self.model.backbone(img_t1)
-            feat_u1 = self._process_features(img_u1, self.model.backbone)
-            feat_t2 = self.model.backbone(img_t2)
-            feat_u2 = self._process_features(img_u2, self.model.backbone)
+            backbone = self._backbone
+            feat_t1 = backbone(img_t1)
+            feat_u1 = self._process_features(img_u1, backbone)
+            feat_t2 = backbone(img_t2)
+            feat_u2 = self._process_features(img_u2, backbone)
             
             # Compute loss
             loss = self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
