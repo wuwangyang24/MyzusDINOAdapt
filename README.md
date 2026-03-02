@@ -246,24 +246,6 @@ evaluator = Evaluator(model, device="cuda")
 features, labels = evaluator.get_features(dataloader)
 ```
 
-### Custom Training Loop
-
-```python
-from src.training import Trainer
-from src.models import DINOWithLoRA
-
-model = DINOWithLoRA(...)
-trainer = Trainer(
-    model=model,
-    train_dataloader=train_dl,
-    val_dataloader=val_dl,
-    learning_rate=1e-3,
-    num_epochs=10
-)
-
-history = trainer.train()
-```
-
 ### Loading Models from Local Torch.Hub
 
 For offline environments or to use a local copy of DINO, you can load models from a local directory:
