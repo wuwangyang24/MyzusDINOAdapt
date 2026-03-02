@@ -100,6 +100,11 @@ class TripleCheckModule(pl.LightningModule):
 
     def configure_optimizers(self):
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        if not trainable_params:
+            raise ValueError(
+                "No trainable parameters found. "
+                "Make sure LoRA/DoRA layers have requires_grad=True."
+            )
         return optim.AdamW(
             trainable_params,
             lr=self.lr,
