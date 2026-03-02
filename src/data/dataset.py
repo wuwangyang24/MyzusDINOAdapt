@@ -18,7 +18,7 @@ class CompoundPlateDataset(Dataset):
     Directory structure:
         root_dir/
             metadata.json
-            plate_1/
+            94000/
                 well_2_1/
                     treated/
                         sample_1.png
@@ -30,7 +30,7 @@ class CompoundPlateDataset(Dataset):
                 well_3_6/
                     treated/
                         sample_1.png
-            plate_2/
+            131000/
                 well_1_2/
                     control/
                         sample_1.png
@@ -43,13 +43,13 @@ class CompoundPlateDataset(Dataset):
         "compounds": [
             {
                 "id": 1,
-                "plate_1": {
-                    "treated": ["plate_1/well_2_1/treated/sample_1.png", ...],
-                    "control": ["plate_1/well_1_3/control/sample_1.png", ...]
+                "94000": {
+                    "treated": ["94000/well_2_1/treated/sample_1.png", ...],
+                    "control": ["94000/well_1_3/control/sample_1.png", ...]
                 },
-                "plate_2": {
-                    "treated": ["plate_2/well_3_6/treated/sample_1.png", ...],
-                    "control": ["plate_2/well_1_2/control/sample_1.png", ...]
+                "131000": {
+                    "treated": ["131000/well_3_6/treated/sample_1.png", ...],
+                    "control": ["131000/well_1_2/control/sample_1.png", ...]
                 }
             },
             {
