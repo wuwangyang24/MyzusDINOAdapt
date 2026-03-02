@@ -50,7 +50,7 @@ The framework can automatically create `metadata.json` by pairing samples with m
 
 **Option 1: Automatic Generation**
 ```bash
-python scripts/train_triple_check.py \
+python scripts/check.py \
   --data-dir paired_bioassay_data \
   --create-metadata \
   --num-epochs 20
@@ -98,7 +98,7 @@ Organize your bioassay images following the structure above. Ensure treated and 
 ### 2. Train Model
 
 ```bash
-python scripts/train_triple_check.py \
+python scripts/check.py \
   --data-dir paired_bioassay_data \
   --val-data-dir paired_bioassay_data_val \
   --num-epochs 50 \
@@ -216,7 +216,7 @@ python scripts/train_triple_check.py \
 ### With Validation Set and W&B Logging
 
 ```bash
-python scripts/train_triple_check.py \
+python scripts/check.py \
   --config configs/default_config.yaml \
   --data-dir data/paired_bioassay_train \
   --val-data-dir data/paired_bioassay_val \

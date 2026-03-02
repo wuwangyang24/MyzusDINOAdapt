@@ -122,7 +122,7 @@ All 23 Python files passed syntax checking:
 - `src/losses/triple_check_loss.py` ✅
 - `src/evaluation/evaluator.py` ✅
 - `scripts/train.py` ✅
-- `scripts/train_triple_check.py` ✅
+- `scripts/check.py` ✅
 - `scripts/evaluate.py` ✅
 - `setup.py` ✅
 - `quick_start.py` ✅

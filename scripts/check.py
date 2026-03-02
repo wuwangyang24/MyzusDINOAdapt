@@ -111,7 +111,7 @@ def main():
     
     # Setup logger
     logger = setup_logger(
-        "train_triple_check",
+        "check",
         log_file=f"{config['logging']['log_dir']}/triple_check_training.log"
     )
     
