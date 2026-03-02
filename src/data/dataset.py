@@ -19,19 +19,19 @@ class CompoundPlateDataset(Dataset):
         root_dir/
             metadata.json
             plate_1/
-                well_A1/
+                well_2_1/
                     treated/
                         sample_1.png
                         sample_2.png
-                well_B1/
+                well_1_3/
                     control/
                         sample_1.png
                         sample_2.png
-                well_C1/
+                well_3_6/
                     treated/
                         sample_1.png
             plate_2/
-                well_A1/
+                well_1_2/
                     control/
                         sample_1.png
                         sample_2.png
@@ -44,12 +44,12 @@ class CompoundPlateDataset(Dataset):
             {
                 "id": 1,
                 "plate_1": {
-                    "treated": ["plate_1/well_A1/treated/sample_1.png", ...],
-                    "control": ["plate_1/well_B1/control/sample_1.png", ...]
+                    "treated": ["plate_1/well_2_1/treated/sample_1.png", ...],
+                    "control": ["plate_1/well_1_3/control/sample_1.png", ...]
                 },
                 "plate_2": {
-                    "treated": ["plate_2/well_C1/treated/sample_1.png", ...],
-                    "control": ["plate_2/well_A1/control/sample_1.png", ...]
+                    "treated": ["plate_2/well_3_6/treated/sample_1.png", ...],
+                    "control": ["plate_2/well_1_2/control/sample_1.png", ...]
                 }
             },
             {
