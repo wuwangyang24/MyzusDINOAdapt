@@ -208,11 +208,13 @@ class TripleCheckTrainer:
             self.optimizer.zero_grad()
             
             # Extract features from DINO backbone
-            with torch.no_grad():
-                feat_t1 = self.model.backbone(img_t1)
-                feat_u1 = self._process_features(img_u1, self.model.backbone)
-                feat_t2 = self.model.backbone(img_t2)
-                feat_u2 = self._process_features(img_u2, self.model.backbone)
+            # NOTE: Do NOT use torch.no_grad() here — gradients must flow
+            # through the LoRA layers so their parameters are updated.
+            # Frozen backbone params have requires_grad=False and won't accumulate gradients.
+            feat_t1 = self.model.backbone(img_t1)
+            feat_u1 = self._process_features(img_u1, self.model.backbone)
+            feat_t2 = self.model.backbone(img_t2)
+            feat_u2 = self._process_features(img_u2, self.model.backbone)
             
             # Compute loss
             loss = self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
