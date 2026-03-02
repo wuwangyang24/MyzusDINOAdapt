@@ -394,10 +394,7 @@ def get_default_transforms(
     """
     if is_train:
         transform = transforms.Compose([
-            transforms.RandomResizedCrop(image_size, scale=(0.8, 1.0)),
-            transforms.RandomHorizontalFlip(),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.RandomRotation(15),
+            transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
