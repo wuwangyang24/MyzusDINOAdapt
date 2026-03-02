@@ -50,7 +50,7 @@ The framework can automatically create `metadata.json` by pairing samples with m
 
 **Option 1: Automatic Generation**
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --data-dir paired_bioassay_data \
   --create-metadata \
   --num-epochs 20
@@ -98,7 +98,7 @@ Organize your bioassay images following the structure above. Ensure treated and 
 ### 2. Train Model
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --data-dir paired_bioassay_data \
   --val-data-dir paired_bioassay_data_val \
   --num-epochs 50 \
@@ -205,7 +205,7 @@ This is useful when you want to enforce both:
 ### Basic Training with L2 Distance
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --data-dir data/paired_bioassay \
   --distance-metric l2 \
   --num-epochs 50 \
@@ -216,7 +216,7 @@ python scripts/check.py \
 ### With Validation Set and W&B Logging
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --data-dir data/paired_bioassay_train \
   --val-data-dir data/paired_bioassay_val \

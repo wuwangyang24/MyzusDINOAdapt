@@ -16,7 +16,7 @@ The framework supports multi-GPU training using PyTorch's `DataParallel` wrapper
 To use all available GPUs:
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --data-dir data/train \
   --val-data-dir data/val \
@@ -28,7 +28,7 @@ python scripts/check.py \
 To use only specific GPUs (e.g., GPUs 0 and 1):
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --data-dir data/train \
   --val-data-dir data/val \
@@ -39,7 +39,7 @@ python scripts/check.py \
 To use GPUs 1, 2, and 3:
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --data-dir data/train \
   --val-data-dir data/val \
@@ -77,7 +77,7 @@ The trainer automatically:
 ### Example 1: Basic Training with 2 GPUs
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --data-dir data/train \
   --val-data-dir data/val \
@@ -93,7 +93,7 @@ python scripts/check.py \
 ### Example 2: Specific GPUs with LoRA
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --method lora \
   --data-dir data/train \
@@ -107,7 +107,7 @@ python scripts/check.py \
 ### Example 3: Specific GPUs with DoRA
 
 ```bash
-python scripts/check.py \
+python scripts/train.py \
   --config configs/default_config.yaml \
   --method dora \
   --data-dir data/train \
@@ -225,7 +225,7 @@ Checkpoints saved with multi-GPU training load fine in single-GPU mode:
 
 ```bash
 # Train with multi-GPU
-python scripts/check.py --multi-gpu ...
+python scripts/train.py --multi-gpu ...
 
 # Evaluate with single GPU (automatic state dict handling)
 python scripts/evaluate.py --checkpoint best_model.pt ...
