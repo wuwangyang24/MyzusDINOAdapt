@@ -1,7 +1,7 @@
 """Data loading modules for DINO LoRA adaptation."""
 
 from .dataloader import create_dataloader
-from .paired_dataset import PairedBioassayDataset, create_paired_metadata
+from .dataset import PairedBioassayDataset, create_paired_metadata
 from .transforms import get_default_transforms
 
 __all__ = [
