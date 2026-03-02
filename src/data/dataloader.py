@@ -1,9 +1,9 @@
 """Data loading utilities."""
 
-from typing import Optional, Tuple
+from typing import Optional
 import torch
 from torch.utils.data import DataLoader, Dataset
-from .dataset import ImageClassificationDataset, get_default_transforms
+from .transforms import get_default_transforms
 
 
 def create_dataloader(
@@ -16,23 +16,25 @@ def create_dataloader(
     dataset: Optional[Dataset] = None,
 ) -> DataLoader:
     """
-    Create a dataloader for image classification.
+    Create a dataloader.
     
     Args:
-        data_dir: Directory containing data (if dataset is None)
+        data_dir: Deprecated. Use dataset parameter
         batch_size: Batch size
         num_workers: Number of data loading workers
-        is_train: Whether to use training transforms
-        image_size: Target image size
+        is_train: Deprecated. Configure transforms in your dataset
+        image_size: Deprecated. Configure transforms in your dataset
         shuffle: Whether to shuffle data
-        dataset: Custom dataset (if None, ImageClassificationDataset is used)
+        dataset: Dataset instance (required - use PairedBioassayDataset)
         
     Returns:
         DataLoader instance
     """
     if dataset is None:
-        transform = get_default_transforms(image_size, is_train)
-        dataset = ImageClassificationDataset(data_dir, transform=transform)
+        raise ValueError(
+            "dataset parameter is required. "
+            "Use PairedBioassayDataset for paired bioassay data."
+        )
     
     dataloader = DataLoader(
         dataset,
