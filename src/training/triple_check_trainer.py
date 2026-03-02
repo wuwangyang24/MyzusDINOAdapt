@@ -140,9 +140,9 @@ class TripleCheckTrainer:
             # Extract features from DINO backbone
             with torch.no_grad():
                 feat_t1 = self.model.backbone(img_t1)
-                feat_u1 = self.model.backbone(img_u1)
+                feat_u1 = self._process_features(img_u1, self.model.backbone)
                 feat_t2 = self.model.backbone(img_t2)
-                feat_u2 = self.model.backbone(img_u2)
+                feat_u2 = self._process_features(img_u2, self.model.backbone)
             
             # Compute loss
             loss = self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
@@ -183,6 +183,40 @@ class TripleCheckTrainer:
             "loss": avg_loss,
         }
     
+    def _process_features(self, img_tensor: torch.Tensor, backbone) -> torch.Tensor:
+        """
+        Process image tensor through backbone, handling multiple untreated samples.
+        
+        Args:
+            img_tensor: Image tensor with shape (B, C, H, W) or (N, B, C, H, W)
+            backbone: Model backbone to extract features
+            
+        Returns:
+            Features with shape (B, D) - averaged if multiple untreated samples
+        """
+        # Check if we have multiple untreated samples (5D tensor)
+        if img_tensor.dim() == 5:
+            # Shape: (N, B, C, H, W) where N is number of untreated samples
+            n_samples, batch_size = img_tensor.shape[:2]
+            
+            # Reshape to (N*B, C, H, W) for efficient batch processing
+            img_reshaped = img_tensor.view(-1, img_tensor.shape[2], img_tensor.shape[3], img_tensor.shape[4])
+            
+            # Forward pass
+            features = backbone(img_reshaped)  # Shape: (N*B, D)
+            
+            # Reshape back to (N, B, D)
+            feature_dim = features.shape[-1]
+            features_reshaped = features.view(n_samples, batch_size, feature_dim)
+            
+            # Average across samples: (B, D)
+            features_avg = features_reshaped.mean(dim=0)
+            
+            return features_avg
+        else:
+            # Regular 4D tensor (B, C, H, W)
+            return backbone(img_tensor)
+    
     @torch.no_grad()
     def validate(self) -> Dict[str, float]:
         """
@@ -206,9 +240,9 @@ class TripleCheckTrainer:
             
             # Extract features
             feat_t1 = self.model.backbone(img_t1)
-            feat_u1 = self.model.backbone(img_u1)
+            feat_u1 = self._process_features(img_u1, self.model.backbone)
             feat_t2 = self.model.backbone(img_t2)
-            feat_u2 = self.model.backbone(img_u2)
+            feat_u2 = self._process_features(img_u2, self.model.backbone)
             
             # Compute loss
             loss = self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)

@@ -14,6 +14,8 @@ class PairedBioassayDataset(Dataset):
     """
     Paired bioassay dataset for triple-check loss training.
     
+    Supports averaging multiple untreated samples per pair.
+    
     Expects directory structure:
         root_dir/
             metadata.json  (contains pairing information)
@@ -32,15 +34,31 @@ class PairedBioassayDataset(Dataset):
                     sample_1.jpg
                     sample_2.jpg
     
-    metadata.json format:
+    metadata.json format (with num_untreated_samples=1):
     {
         "pairs": [
             {
                 "id": 1,
                 "bioassay_1_treated": "bioassay_1/treated/sample_1.jpg",
-                "bioassay_1_untreated": "bioassay_1/untreated/sample_1.jpg",
+                "bioassay_1_untreated": ["bioassay_1/untreated/sample_1.jpg"],
                 "bioassay_2_treated": "bioassay_2/treated/sample_1.jpg",
-                "bioassay_2_untreated": "bioassay_2/untreated/sample_1.jpg"
+                "bioassay_2_untreated": ["bioassay_2/untreated/sample_1.jpg"]
+            },
+            ...
+        ]
+    }
+    
+    metadata.json format (with num_untreated_samples > 1):
+    {
+        "pairs": [
+            {
+                "id": 1,
+                "bioassay_1_treated": "bioassay_1/treated/sample_1.jpg",
+                "bioassay_1_untreated": ["bioassay_1/untreated/sample_1.jpg", 
+                                         "bioassay_1/untreated/sample_2.jpg"],
+                "bioassay_2_treated": "bioassay_2/treated/sample_1.jpg",
+                "bioassay_2_untreated": ["bioassay_2/untreated/sample_1.jpg",
+                                         "bioassay_2/untreated/sample_2.jpg"]
             },
             ...
         ]
@@ -52,6 +70,7 @@ class PairedBioassayDataset(Dataset):
         root_dir: str,
         metadata_file: str = "metadata.json",
         transform: Optional[Callable] = None,
+        num_untreated_samples: int = 1,
     ):
         """
         Initialize paired bioassay dataset.
@@ -60,9 +79,12 @@ class PairedBioassayDataset(Dataset):
             root_dir: Root directory containing bioassay samples
             metadata_file: Name of metadata JSON file
             transform: Image transformations to apply
+            num_untreated_samples: Number of untreated samples to average for each pair.
+                                   If > 1, untreated samples in metadata are expected to be lists.
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
+        self.num_untreated_samples = num_untreated_samples
         self.metadata_path = self.root_dir / metadata_file
         
         if not self.metadata_path.exists():
@@ -81,7 +103,7 @@ class PairedBioassayDataset(Dataset):
         """Return dataset size."""
         return len(self.pairs)
     
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, idx: int):
         """
         Get paired samples by index.
         
@@ -90,21 +112,50 @@ class PairedBioassayDataset(Dataset):
             
         Returns:
             Tuple of (treated_bioassay1, untreated_bioassay1, treated_bioassay2, untreated_bioassay2)
+            
+            If num_untreated_samples == 1:
+                - untreated samples are shape (C, H, W)
+                
+            If num_untreated_samples > 1:
+                - untreated samples are shape (N, C, H, W) where N = num_untreated_samples
+                - This allows averaging after model forward pass
         """
         pair = self.pairs[idx]
         
-        # Load images
+        # Load treated images
         img_t1 = self._load_image(pair["bioassay_1_treated"])
-        img_u1 = self._load_image(pair["bioassay_1_untreated"])
         img_t2 = self._load_image(pair["bioassay_2_treated"])
-        img_u2 = self._load_image(pair["bioassay_2_untreated"])
         
-        # Apply transforms
+        # Load untreated images (may return single image or list of images)
+        untreated_u1 = self._load_untreated_images(pair["bioassay_1_untreated"])
+        untreated_u2 = self._load_untreated_images(pair["bioassay_2_untreated"])
+        
+        # Apply transforms - handle both single image and list of images
         if self.transform:
             img_t1 = self.transform(img_t1)
-            img_u1 = self.transform(img_u1)
             img_t2 = self.transform(img_t2)
-            img_u2 = self.transform(img_u2)
+            
+            # For untreated images
+            if isinstance(untreated_u1, list):
+                untreated_u1 = [self.transform(img) for img in untreated_u1]
+            else:
+                untreated_u1 = self.transform(untreated_u1)
+                
+            if isinstance(untreated_u2, list):
+                untreated_u2 = [self.transform(img) for img in untreated_u2]
+            else:
+                untreated_u2 = self.transform(untreated_u2)
+        
+        # Convert to tensors - stack if multiple samples
+        if isinstance(untreated_u1, list):
+            img_u1 = torch.stack(untreated_u1)  # Shape: (N, C, H, W)
+        else:
+            img_u1 = untreated_u1
+            
+        if isinstance(untreated_u2, list):
+            img_u2 = torch.stack(untreated_u2)  # Shape: (N, C, H, W)
+        else:
+            img_u2 = untreated_u2
         
         return img_t1, img_u1, img_t2, img_u2
     
@@ -113,6 +164,28 @@ class PairedBioassayDataset(Dataset):
         full_path = self.root_dir / image_path
         image = Image.open(full_path).convert('RGB')
         return image
+    
+    def _load_untreated_images(self, untreated_paths):
+        """
+        Load untreated sample(s) without averaging.
+        
+        Args:
+            untreated_paths: Either a string (single path) or list of strings (multiple paths)
+                            
+        Returns:
+            PIL Image if single path, or list of PIL Images if multiple paths.
+            The caller will handle stacking them into a tensor.
+        """
+        # Handle both old format (single string) and new format (list of strings)
+        if isinstance(untreated_paths, str):
+            return self._load_image(untreated_paths)
+        
+        # Load multiple untreated samples as a list
+        if isinstance(untreated_paths, list):
+            images = [self._load_image(path) for path in untreated_paths]
+            return images
+        
+        raise ValueError(f"Unexpected untreated_paths type: {type(untreated_paths)}")
 
 
 def create_paired_metadata(
@@ -122,6 +195,7 @@ def create_paired_metadata(
     treated_dir: str = "treated",
     untreated_dir: str = "untreated",
     output_file: str = "metadata.json",
+    num_untreated_samples: int = 1,
 ) -> None:
     """
     Create metadata.json file by pairing samples from two bioassays.
@@ -135,6 +209,8 @@ def create_paired_metadata(
         treated_dir: Directory name for treated samples
         untreated_dir: Directory name for untreated samples
         output_file: Output metadata filename
+        num_untreated_samples: Number of untreated samples to group per treated sample.
+                              If > 1, each pair will have multiple untreated samples that will be averaged.
     """
     root = Path(root_dir)
     
@@ -156,29 +232,64 @@ def create_paired_metadata(
     untreated_2_files = sorted([f.name for f in untreated_2_path.glob("*") if f.is_file()])
     
     # Verify matching files
-    if not (len(treated_1_files) == len(untreated_1_files) == len(treated_2_files) == len(untreated_2_files)):
+    if not (len(treated_1_files) == len(treated_2_files)):
         raise RuntimeError(
-            f"Mismatched file counts: "
-            f"T1={len(treated_1_files)}, U1={len(untreated_1_files)}, "
-            f"T2={len(treated_2_files)}, U2={len(untreated_2_files)}"
+            f"Mismatched treated file counts: "
+            f"T1={len(treated_1_files)}, T2={len(treated_2_files)}"
+        )
+    
+    # Check that untreated files can be divided evenly
+    if len(untreated_1_files) % num_untreated_samples != 0:
+        raise RuntimeError(
+            f"Bioassay 1: {len(untreated_1_files)} untreated samples cannot be evenly divided "
+            f"into groups of {num_untreated_samples}"
+        )
+    
+    if len(untreated_2_files) % num_untreated_samples != 0:
+        raise RuntimeError(
+            f"Bioassay 2: {len(untreated_2_files)} untreated samples cannot be evenly divided "
+            f"into groups of {num_untreated_samples}"
+        )
+    
+    num_treated = len(treated_1_files)
+    expected_untreated_per_bioassay = num_treated * num_untreated_samples
+    
+    if len(untreated_1_files) != expected_untreated_per_bioassay:
+        raise RuntimeError(
+            f"Bioassay 1: Expected {expected_untreated_per_bioassay} untreated samples "
+            f"({num_treated} treated × {num_untreated_samples}), got {len(untreated_1_files)}"
+        )
+    
+    if len(untreated_2_files) != expected_untreated_per_bioassay:
+        raise RuntimeError(
+            f"Bioassay 2: Expected {expected_untreated_per_bioassay} untreated samples "
+            f"({num_treated} treated × {num_untreated_samples}), got {len(untreated_2_files)}"
         )
     
     # Create pairs
     pairs = []
-    for i, (t1, u1, t2, u2) in enumerate(zip(treated_1_files, untreated_1_files, treated_2_files, untreated_2_files)):
+    for pair_idx in range(num_treated):
+        # Get the N untreated samples for this treated sample
+        start_idx = pair_idx * num_untreated_samples
+        end_idx = start_idx + num_untreated_samples
+        
+        u1_files = untreated_1_files[start_idx:end_idx]
+        u2_files = untreated_2_files[start_idx:end_idx]
+        
         pair = {
-            "id": i,
-            "bioassay_1_treated": str(Path(bioassay_1_dir) / treated_dir / t1),
-            "bioassay_1_untreated": str(Path(bioassay_1_dir) / untreated_dir / u1),
-            "bioassay_2_treated": str(Path(bioassay_2_dir) / treated_dir / t2),
-            "bioassay_2_untreated": str(Path(bioassay_2_dir) / untreated_dir / u2),
+            "id": pair_idx,
+            "bioassay_1_treated": str(Path(bioassay_1_dir) / treated_dir / treated_1_files[pair_idx]),
+            "bioassay_1_untreated": [str(Path(bioassay_1_dir) / untreated_dir / f) for f in u1_files],
+            "bioassay_2_treated": str(Path(bioassay_2_dir) / treated_dir / treated_2_files[pair_idx]),
+            "bioassay_2_untreated": [str(Path(bioassay_2_dir) / untreated_dir / f) for f in u2_files],
         }
         pairs.append(pair)
     
     # Save metadata
-    metadata = {"pairs": pairs}
+    metadata = {"pairs": pairs, "num_untreated_samples": num_untreated_samples}
     output_path = root / output_file
     with open(output_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print(f"Created metadata with {len(pairs)} pairs at {output_path}")
+    print(f"Created metadata with {len(pairs)} pairs "
+          f"({num_untreated_samples} untreated samples per treated) at {output_path}")

@@ -127,6 +127,7 @@ tensorboard --logdir logs
 --batch-size           Batch size
 --learning-rate        Learning rate
 --distance-metric      Distance metric: l2, cosine, or kl
+--num-untreated-samples  Number of untreated samples to average per pair (default: 1)
 --device               Device: cuda or cpu
 ```
 

@@ -69,6 +69,11 @@ def parse_args():
         help="Distance metric for triple-check loss"
     )
     parser.add_argument(
+        "--num-untreated-samples",
+        type=int,
+        help="Number of untreated samples to average per pair (default: 1)"
+    )
+    parser.add_argument(
         "--device",
         type=str,
         choices=["cuda", "cpu"],
@@ -94,8 +99,16 @@ def main():
         config["training"]["batch_size"] = args.batch_size
     if args.learning_rate:
         config["training"]["learning_rate"] = args.learning_rate
+    if args.num_untreated_samples:
+        config["data"]["num_untreated_samples"] = args.num_untreated_samples
     if args.device:
         config["device"] = args.device
+    
+    # Set default num_untreated_samples if not specified
+    if "num_untreated_samples" not in config.get("data", {}):
+        config.setdefault("data", {})[
+            "num_untreated_samples"
+        ] = 1
     
     # Setup logger
     logger = setup_logger(
@@ -166,7 +179,8 @@ def main():
     
     train_dataset = PairedBioassayDataset(
         root_dir=args.data_dir,
-        transform=transform
+        transform=transform,
+        num_untreated_samples=config["data"].get("num_untreated_samples", 1)
     )
     
     train_dataloader = DataLoader(
@@ -186,7 +200,8 @@ def main():
         )
         val_dataset = PairedBioassayDataset(
             root_dir=args.val_data_dir,
-            transform=val_transform
+            transform=val_transform,
+            num_untreated_samples=config["data"].get("num_untreated_samples", 1)
         )
         val_dataloader = DataLoader(
             val_dataset,

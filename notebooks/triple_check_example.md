@@ -19,18 +19,21 @@ from src.utils import setup_logger
 
 ## 1. Prepare Data
 
-### Option A: Auto-generate metadata.json
+### Option A: Auto-generate metadata.json with Multiple Untreated Samples
 
 ```python
 from src.data import create_paired_metadata
 
 # Create metadata from directory structure
+# num_untreated_samples=3 means each treated sample will be paired with 3 untreated samples
+# These will be averaged after passing through the model
 create_paired_metadata(
     root_dir="path/to/paired_bioassay_data",
     bioassay_1_dir="bioassay_1",
     bioassay_2_dir="bioassay_2",
     treated_dir="treated",
-    untreated_dir="untreated"
+    untreated_dir="untreated",
+    num_untreated_samples=3  # Default: 1
 )
 ```
 
@@ -68,16 +71,19 @@ print(f"Model created with {sum(p.numel() for p in model.parameters() if p.requi
 
 ```python
 # Create datasets
+# num_untreated_samples must match the value used in create_paired_metadata
 transform = get_default_transforms(image_size=224, is_train=True)
 
 train_dataset = PairedBioassayDataset(
     root_dir="path/to/paired_bioassay_data/train",
-    transform=transform
+    transform=transform,
+    num_untreated_samples=3  # Match the value from metadata creation
 )
 
 val_dataset = PairedBioassayDataset(
     root_dir="path/to/paired_bioassay_data/val",
-    transform=get_default_transforms(image_size=224, is_train=False)
+    transform=get_default_transforms(image_size=224, is_train=False),
+    num_untreated_samples=3  # Match the value from metadata creation
 )
 
 # Create dataloaders
@@ -99,6 +105,7 @@ val_dataloader = DataLoader(
 
 print(f"Train samples: {len(train_dataset)}")
 print(f"Val samples: {len(val_dataset)}")
+print(f"Note: Untreated samples will be {3}x3 = 9 images averaged before each forward pass")
 ```
 
 ## 4. Choose Loss Function
