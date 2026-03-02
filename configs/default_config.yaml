@@ -54,7 +54,7 @@ checkpoint:
   
 logging:
   log_dir: "logs"
-  tensorboard: true
+  tensorboard: false
   wandb:
     enabled: true
     project: "dino-lora"  # W&B project name
