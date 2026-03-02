@@ -39,7 +39,6 @@ env/
 .jupyter/
 
 # Data and checkpoints
-data/
 checkpoints/
 logs/
 *.pt
