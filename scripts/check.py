@@ -78,6 +78,17 @@ def parse_args():
         choices=["cuda", "cpu"],
         help="Device to train on (overrides config)"
     )
+    parser.add_argument(
+        "--multi-gpu",
+        action="store_true",
+        help="Enable multi-GPU training using DataParallel"
+    )
+    parser.add_argument(
+        "--gpu-ids",
+        type=int,
+        nargs="+",
+        help="GPU IDs to use (e.g., --gpu-ids 0 1 2). If not specified, uses all available GPUs"
+    )
     
     return parser.parse_args()
 
@@ -231,6 +242,8 @@ def main():
         log_dir=config["logging"]["log_dir"],
         save_interval=config["checkpoint"]["save_interval"],
         wandb_config=config["logging"].get("wandb"),
+        multi_gpu=args.multi_gpu,
+        gpu_ids=args.gpu_ids,
     )
     
     # Train

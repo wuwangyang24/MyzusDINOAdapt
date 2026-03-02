@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Union
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -32,11 +32,13 @@ class TripleCheckTrainer:
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
         num_epochs: int = 10,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: Union[str, List[int]] = "cuda" if torch.cuda.is_available() else "cpu",
         checkpoint_dir: str = "checkpoints",
         log_dir: str = "logs",
         save_interval: int = 1,
         wandb_config: Optional[Dict[str, Any]] = None,
+        multi_gpu: bool = False,
+        gpu_ids: Optional[List[int]] = None,
     ):
         """
         Initialize Triple-Check trainer.
@@ -49,16 +51,30 @@ class TripleCheckTrainer:
             learning_rate: Learning rate
             weight_decay: Weight decay for optimizer
             num_epochs: Number of training epochs
-            device: Device to train on
+            device: Device to train on (cuda, cpu, or list of GPU IDs)
             checkpoint_dir: Directory to save checkpoints
             log_dir: Directory for logs
             save_interval: Epoch interval for saving checkpoints
             wandb_config: W&B configuration dictionary
+            multi_gpu: Whether to use DataParallel for multiple GPUs
+            gpu_ids: List of GPU IDs to use (if None, uses all available)
         """
-        self.model = model.to(device)
+        # Handle device and multi-GPU setup
+        self.device = self._setup_device(device, multi_gpu, gpu_ids)
+        self.multi_gpu = multi_gpu and torch.cuda.device_count() > 1
+        self.model_device = self.device  # Device for loss and other components
+        
+        # Move model to device
+        self.model = model.to(self.device)
+        
+        # Apply DataParallel if multi-GPU is enabled
+        if self.multi_gpu:
+            if gpu_ids is None:
+                gpu_ids = list(range(torch.cuda.device_count()))
+            self.model = nn.DataParallel(self.model, device_ids=gpu_ids)
+        
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.device = device
         self.num_epochs = num_epochs
         self.checkpoint_dir = Path(checkpoint_dir)
         self.log_dir = Path(log_dir)
@@ -74,10 +90,13 @@ class TripleCheckTrainer:
             log_file=str(self.log_dir / "training.log")
         )
         
+        # Log device information
+        self._log_device_info()
+        
         # Setup loss function
         if loss_fn is None:
             loss_fn = TripleCheckLoss(distance_metric="l2", reduction="mean")
-        self.loss_fn = loss_fn.to(device)
+        self.loss_fn = loss_fn.to(self.model_device)
         
         # Setup W&B
         self.wandb_enabled = False
@@ -95,6 +114,8 @@ class TripleCheckTrainer:
                         "num_epochs": num_epochs,
                         "batch_size": train_dataloader.batch_size,
                         "loss_function": self.loss_fn.__class__.__name__,
+                        "multi_gpu": self.multi_gpu,
+                        "num_gpus": torch.cuda.device_count() if torch.cuda.is_available() else 0,
                     }
                 )
                 self.wandb_enabled = True
@@ -116,6 +137,55 @@ class TripleCheckTrainer:
         # Training stats
         self.global_step = 0
         self.best_val_loss = float('inf')
+    
+    @staticmethod
+    def _setup_device(
+        device: Union[str, List[int]],
+        multi_gpu: bool,
+        gpu_ids: Optional[List[int]] = None
+    ) -> str:
+        """
+        Setup device for training.
+        
+        Args:
+            device: Device specification (cuda, cpu, or list of GPU IDs)
+            multi_gpu: Whether to use multi-GPU
+            gpu_ids: List of GPU IDs to use
+            
+        Returns:
+            Device string (cuda or cpu)
+        """
+        if isinstance(device, list):
+            # Convert list of GPU IDs to 'cuda'
+            if len(device) > 0 and torch.cuda.is_available():
+                torch.cuda.set_device(device[0])
+                return "cuda"
+            else:
+                return "cpu"
+        
+        # Handle string device
+        if device == "cuda":
+            if torch.cuda.is_available():
+                return "cuda"
+            else:
+                print("Warning: CUDA requested but not available. Using CPU.")
+                return "cpu"
+        
+        return device
+    
+    def _log_device_info(self) -> None:
+        """Log device and GPU information."""
+        if torch.cuda.is_available():
+            self.logger.info(f"CUDA is available")
+            self.logger.info(f"Number of GPUs: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                self.logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            if self.multi_gpu:
+                self.logger.info("Using DataParallel for multi-GPU training")
+            else:
+                self.logger.info(f"Using single GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            self.logger.info("Using CPU for training")
     
     def train_epoch(self) -> Dict[str, float]:
         """
@@ -262,9 +332,12 @@ class TripleCheckTrainer:
             epoch: Current epoch
             is_best: Whether this is the best checkpoint
         """
+        # Handle DataParallel wrapper
+        model_state = self.model.module.state_dict() if self.multi_gpu else self.model.state_dict()
+        
         checkpoint = {
             "epoch": epoch,
-            "model_state_dict": self.model.state_dict(),
+            "model_state_dict": model_state,
             "optimizer_state_dict": self.optimizer.state_dict(),
             "global_step": self.global_step,
         }
