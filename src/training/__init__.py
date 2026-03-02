@@ -1,5 +1,5 @@
 """Training modules for DINO LoRA adaptation."""
 
-from .trainer import TripleCheckTrainer
+from .trainer import TripleCheckModule
 
-__all__ = ["TripleCheckTrainer"]
+__all__ = ["TripleCheckModule"]

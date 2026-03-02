@@ -2,14 +2,23 @@
 
 import argparse
 import torch
+import pytorch_lightning as pl
 from pathlib import Path
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss
 from src.data import PairedBioassayDataset, create_paired_metadata, get_default_transforms
-from src.training import TripleCheckTrainer
+from src.training import TripleCheckModule
 from src.utils import setup_logger, load_config
 from torch.utils.data import DataLoader
+
+try:
+    from pytorch_lightning.loggers import WandbLogger
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
 
 
 def parse_args():
@@ -81,7 +90,7 @@ def parse_args():
     parser.add_argument(
         "--multi-gpu",
         action="store_true",
-        help="Enable multi-GPU training using DataParallel"
+        help="Enable multi-GPU training using DDP"
     )
     parser.add_argument(
         "--gpu-ids",
@@ -89,17 +98,24 @@ def parse_args():
         nargs="+",
         help="GPU IDs to use (e.g., --gpu-ids 0 1 2). If not specified, uses all available GPUs"
     )
-    
+    parser.add_argument(
+        "--precision",
+        type=str,
+        default="32",
+        choices=["32", "16-mixed", "bf16-mixed"],
+        help="Training precision: 32 (full), 16-mixed (AMP float16), bf16-mixed (AMP bfloat16)"
+    )
+
     return parser.parse_args()
 
 
 def main():
     """Main training function."""
     args = parse_args()
-    
+
     # Load configuration
     config = load_config(args.config)
-    
+
     # Override config with command line arguments
     if args.method:
         config["adaptation"]["method"] = args.method
@@ -113,49 +129,44 @@ def main():
         config["data"]["num_untreated_samples"] = args.num_untreated_samples
     if args.device:
         config["device"] = args.device
-    
+
     # Set default num_untreated_samples if not specified
-    if "num_untreated_samples" not in config.get("data", {}):
-        config.setdefault("data", {})[
-            "num_untreated_samples"
-        ] = 1
-    
+    config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
+
     # Setup logger
     logger = setup_logger(
         "check",
         log_file=f"{config['logging']['log_dir']}/triple_check_training.log"
     )
-    
+
+    pl.seed_everything(config.get("seed", 42))
+
     adaptation_method = config["adaptation"]["method"]
-    
+
     logger.info("=" * 50)
     logger.info(f"DINO {adaptation_method.upper()} Triple-Check Training")
     logger.info("=" * 50)
     logger.info(f"Configuration: {args.config}")
     logger.info(f"Adaptation Method: {adaptation_method}")
-    
-    # Set random seed
-    torch.manual_seed(config.get("seed", 42))
-    
+
     # Create metadata if needed
     if args.create_metadata:
         logger.info("Creating metadata from directory structure...")
         create_paired_metadata(args.data_dir)
-    
+
     # Create model based on adaptation method
     logger.info(f"Creating model: {config['model']['backbone']} with {adaptation_method.upper()}")
-    
+
     if adaptation_method == "lora":
         lora_config = LoRAConfig(
             r=config["lora"]["r"],
             lora_alpha=config["lora"]["lora_alpha"],
             lora_dropout=config["lora"]["lora_dropout"],
         )
-        
         model = DINOWithLoRA(
             backbone_name=config["model"]["backbone"],
             lora_config=lora_config,
-            num_classes=None,  # No classification head for triple-check
+            num_classes=None,
             hub_source=config["model"].get("hub_source", "github"),
             hub_source_dir=config["model"].get("hub_source_dir"),
             weights_path=config["model"].get("weights_path"),
@@ -166,33 +177,30 @@ def main():
             dora_alpha=config["dora"]["dora_alpha"],
             dora_dropout=config["dora"]["dora_dropout"],
         )
-        
         model = DINOWithDoRA(
             backbone_name=config["model"]["backbone"],
             dora_config=dora_config,
-            num_classes=None,  # No classification head for triple-check
+            num_classes=None,
             hub_source=config["model"].get("hub_source", "github"),
             hub_source_dir=config["model"].get("hub_source_dir"),
             weights_path=config["model"].get("weights_path"),
         )
     else:
         raise ValueError(f"Unknown adaptation method: {adaptation_method}")
-    
+
     logger.info("Model created successfully")
-    
+
     # Create datasets
     logger.info(f"Loading paired bioassay data from: {args.data_dir}")
     transform = get_default_transforms(
         image_size=config["data"]["image_size"],
         is_train=True
     )
-    
     train_dataset = PairedBioassayDataset(
         root_dir=args.data_dir,
         transform=transform,
-        num_untreated_samples=config["data"].get("num_untreated_samples", 1)
+        num_untreated_samples=config["data"].get("num_untreated_samples", 1),
     )
-    
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=config["training"]["batch_size"],
@@ -200,7 +208,7 @@ def main():
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
     )
-    
+
     val_dataloader = None
     if args.val_data_dir:
         logger.info(f"Loading validation data from: {args.val_data_dir}")
@@ -211,7 +219,7 @@ def main():
         val_dataset = PairedBioassayDataset(
             root_dir=args.val_data_dir,
             transform=val_transform,
-            num_untreated_samples=config["data"].get("num_untreated_samples", 1)
+            num_untreated_samples=config["data"].get("num_untreated_samples", 1),
         )
         val_dataloader = DataLoader(
             val_dataset,
@@ -220,36 +228,75 @@ def main():
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
         )
-    
-    # Create loss function
+
+    # Create loss function and Lightning module
     loss_fn = TripleCheckLoss(
         distance_metric=args.distance_metric,
         temperature=1.0,
-        reduction="mean"
+        reduction="mean",
     )
-    
-    # Create trainer
-    trainer = TripleCheckTrainer(
+    module = TripleCheckModule(
         model=model,
-        train_dataloader=train_dataloader,
-        val_dataloader=val_dataloader,
         loss_fn=loss_fn,
         learning_rate=config["training"]["learning_rate"],
         weight_decay=config["training"]["weight_decay"],
-        num_epochs=config["training"]["num_epochs"],
-        device=config["device"],
-        checkpoint_dir=config["checkpoint"]["save_dir"],
-        log_dir=config["logging"]["log_dir"],
-        save_interval=config["checkpoint"]["save_interval"],
-        wandb_config=config["logging"].get("wandb"),
-        multi_gpu=args.multi_gpu,
-        gpu_ids=args.gpu_ids,
     )
-    
-    # Train
+
+    # --- Callbacks ---
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=config["checkpoint"]["save_dir"],
+        every_n_epochs=config["checkpoint"]["save_interval"],
+        monitor="val/loss" if val_dataloader is not None else None,
+        save_top_k=1,
+        filename="best",
+        save_last=True,
+    )
+    callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval="epoch")]
+
+    # --- Loggers ---
+    tb_logger = TensorBoardLogger(
+        save_dir=config["logging"]["log_dir"],
+        name="lightning_logs",
+    )
+    pl_loggers = [tb_logger]
+
+    wandb_cfg = config["logging"].get("wandb", {})
+    if WANDB_AVAILABLE and wandb_cfg.get("enabled", False):
+        pl_loggers.append(
+            WandbLogger(
+                project=wandb_cfg.get("project", "dino-lora-triple-check"),
+                entity=wandb_cfg.get("entity"),
+                name=wandb_cfg.get("name"),
+                tags=wandb_cfg.get("tags", []),
+                notes=wandb_cfg.get("notes", ""),
+            )
+        )
+
+    # --- Accelerator / devices / strategy ---
+    use_cuda = config.get("device", "cuda") == "cuda" and torch.cuda.is_available()
+    accelerator = "gpu" if use_cuda else "cpu"
+    if args.multi_gpu:
+        devices = args.gpu_ids if args.gpu_ids else "auto"
+        strategy = "ddp"
+    else:
+        devices = [args.gpu_ids[0]] if args.gpu_ids else 1
+        strategy = "auto"
+
+    # --- Build Lightning Trainer ---
+    trainer = pl.Trainer(
+        max_epochs=config["training"]["num_epochs"],
+        accelerator=accelerator,
+        devices=devices,
+        strategy=strategy,
+        precision=args.precision,
+        callbacks=callbacks,
+        logger=pl_loggers,
+        accumulate_grad_batches=config["training"].get("gradient_accumulation_steps", 1),
+        log_every_n_steps=10,
+    )
+
     logger.info("Starting training...")
-    history = trainer.train()
-    
+    trainer.fit(module, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
     logger.info("Training completed!")
 
 

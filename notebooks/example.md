@@ -12,7 +12,10 @@ from torch.utils.data import DataLoader
 from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckLoss, TripleCheckWithContrastiveLoss
 from src.data import PairedBioassayDataset, create_paired_metadata, get_default_transforms
-from src.training import TripleCheckTrainer
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
+from src.training import TripleCheckModule
 from src.utils import setup_logger
 ```
 
@@ -141,34 +144,44 @@ loss_fn = TripleCheckWithContrastiveLoss(
 )
 ```
 
-## 5. Create Trainer
+## 5. Create Lightning Module and Trainer
 
 ```python
-trainer = TripleCheckTrainer(
+# Lightning module wraps model + loss + optimizer
+module = TripleCheckModule(
     model=model,
-    train_dataloader=train_dataloader,
-    val_dataloader=val_dataloader,
     loss_fn=loss_fn,
     learning_rate=1e-3,
     weight_decay=1e-4,
-    num_epochs=50,
-    device="cuda",
-    checkpoint_dir="checkpoints",
-    log_dir="logs",
-    save_interval=5,
-    wandb_config={
-        "enabled": True,
-        "project": "dino-lora-triple-check",
-        "entity": "your-username",
-        "tags": ["triple-check", "bioassay"]
-    }
+)
+
+# Callbacks
+checkpoint_cb = ModelCheckpoint(
+    dirpath="checkpoints",
+    monitor="val/loss",
+    save_top_k=1,
+    filename="best",
+    save_last=True,
+    every_n_epochs=5,
+)
+
+# Build Lightning Trainer
+trainer = pl.Trainer(
+    max_epochs=50,
+    accelerator="gpu",   # or "cpu"
+    devices=1,           # number of GPUs; use "auto" or N for multi-GPU DDP
+    strategy="auto",     # set "ddp" for multi-GPU
+    precision="32",      # or "16-mixed" for AMP
+    callbacks=[checkpoint_cb],
+    logger=TensorBoardLogger("logs", name="lightning_logs"),
+    log_every_n_steps=10,
 )
 ```
 
 ## 6. Train Model
 
 ```python
-history = trainer.train()
+trainer.fit(module, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 ```
 
 ## 7. Analyze Results

@@ -231,7 +231,9 @@ python scripts/check.py \
 from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckWithContrastiveLoss
 from src.data import PairedBioassayDataset, get_default_transforms
-from src.training import TripleCheckTrainer
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from src.training import TripleCheckModule
 from torch.utils.data import DataLoader
 
 # Setup model and loss
@@ -255,17 +257,22 @@ dataset = PairedBioassayDataset(
 )
 dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
-# Train
-trainer = TripleCheckTrainer(
+# Create Lightning module
+module = TripleCheckModule(
     model=model,
-    train_dataloader=dataloader,
     loss_fn=loss_fn,
-    num_epochs=50,
     learning_rate=1e-3,
-    device="cuda"
+    weight_decay=1e-4,
 )
 
-history = trainer.train()
+# Train
+trainer = pl.Trainer(
+    max_epochs=50,
+    accelerator="gpu",
+    devices=1,
+    callbacks=[ModelCheckpoint(dirpath="checkpoints", monitor="val/loss", save_top_k=1)],
+)
+trainer.fit(module, train_dataloaders=dataloader)
 ```
 
 ## Feature Analysis
