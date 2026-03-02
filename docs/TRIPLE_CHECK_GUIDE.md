@@ -232,7 +232,7 @@ from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckWithContrastiveLoss
 from src.data.paired_dataset import PairedBioassayDataset
 from src.data import get_default_transforms
-from src.training.triple_check_trainer import TripleCheckTrainer
+from src.training import TripleCheckTrainer
 from torch.utils.data import DataLoader
 
 # Setup model and loss

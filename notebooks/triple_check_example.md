@@ -13,7 +13,7 @@ from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckLoss, TripleCheckWithContrastiveLoss
 from src.data.paired_dataset import PairedBioassayDataset, create_paired_metadata
 from src.data import get_default_transforms
-from src.training.triple_check_trainer import TripleCheckTrainer
+from src.training import TripleCheckTrainer
 from src.utils import setup_logger
 ```
 
