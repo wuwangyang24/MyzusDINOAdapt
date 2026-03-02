@@ -1,4 +1,4 @@
-"""Dataset for paired bioassay samples."""
+"""Dataset for paired bioassay samples and compound-plate-well structures."""
 
 from typing import Optional, Callable, Tuple, Dict, List
 from pathlib import Path
@@ -8,61 +8,59 @@ from torchvision import transforms
 from PIL import Image
 import json
 import os
+from collections import defaultdict
 
 
-class PairedBioassayDataset(Dataset):
+class CompoundPlateDataset(Dataset):
     """
-    Paired bioassay dataset for triple-check loss training.
+    Dataset for compound screening across multiple plates and wells.
     
-    Supports averaging multiple untreated samples per pair.
-    
-    Expects directory structure:
+    Directory structure:
         root_dir/
-            metadata.json  (contains pairing information)
-            bioassay_1/
-                treated/
-                    sample_1.jpg
-                    sample_2.jpg
-                untreated/
-                    sample_1.jpg
-                    sample_2.jpg
-            bioassay_2/
-                treated/
-                    sample_1.jpg
-                    sample_2.jpg
-                untreated/
-                    sample_1.jpg
-                    sample_2.jpg
+            metadata.json
+            plate_1/
+                well_A1/
+                    treated/
+                        sample_1.png
+                        sample_2.png
+                    control/
+                        sample_1.png
+                        sample_2.png
+                well_A2/
+                    treated/
+                        sample_1.png
+                    control/
+                        sample_1.png
+            plate_2/
+                well_B1/
+                    treated/
+                        ...
+                    control/
+                        ...
     
-    metadata.json format (with num_untreated_samples=1):
+    metadata.json format:
     {
-        "pairs": [
+        "compounds": [
             {
                 "id": 1,
-                "bioassay_1_treated": "bioassay_1/treated/sample_1.jpg",
-                "bioassay_1_untreated": ["bioassay_1/untreated/sample_1.jpg"],
-                "bioassay_2_treated": "bioassay_2/treated/sample_1.jpg",
-                "bioassay_2_untreated": ["bioassay_2/untreated/sample_1.jpg"]
+                "plate_1_treated": ["plate_1/well_A1/treated/sample_1.png", ...],
+                "plate_1_control": ["plate_1/well_A1/control/sample_1.png", ...],
+                "plate_2_treated": ["plate_2/well_B1/treated/sample_1.png", ...],
+                "plate_2_control": ["plate_2/well_B1/control/sample_1.png", ...]
             },
-            ...
+            {
+                "id": 2,
+                ...
+            }
         ]
     }
     
-    metadata.json format (with num_untreated_samples > 1):
-    {
-        "pairs": [
-            {
-                "id": 1,
-                "bioassay_1_treated": "bioassay_1/treated/sample_1.jpg",
-                "bioassay_1_untreated": ["bioassay_1/untreated/sample_1.jpg", 
-                                         "bioassay_1/untreated/sample_2.jpg"],
-                "bioassay_2_treated": "bioassay_2/treated/sample_1.jpg",
-                "bioassay_2_untreated": ["bioassay_2/untreated/sample_1.jpg",
-                                         "bioassay_2/untreated/sample_2.jpg"]
-            },
-            ...
-        ]
-    }
+    Data flow:
+    1. Get compound data (all treated/control samples from all plates)
+    2. For each plate: average control latents
+    3. For each treated sample on a plate: subtract that plate's control average
+    4. For each plate: average the adjusted treated latents
+    5. Loss: minimize distance between plate-average treated latents for same compound
     """
     
     def __init__(
@@ -70,21 +68,17 @@ class PairedBioassayDataset(Dataset):
         root_dir: str,
         metadata_file: str = "metadata.json",
         transform: Optional[Callable] = None,
-        num_untreated_samples: int = 1,
     ):
         """
-        Initialize paired bioassay dataset.
+        Initialize compound-plate dataset.
         
         Args:
-            root_dir: Root directory containing bioassay samples
+            root_dir: Root directory containing plate samples
             metadata_file: Name of metadata JSON file
             transform: Image transformations to apply
-            num_untreated_samples: Number of untreated samples to average for each pair.
-                                   If > 1, untreated samples in metadata are expected to be lists.
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
-        self.num_untreated_samples = num_untreated_samples
         self.metadata_path = self.root_dir / metadata_file
         
         if not self.metadata_path.exists():
@@ -94,205 +88,300 @@ class PairedBioassayDataset(Dataset):
         with open(self.metadata_path, 'r') as f:
             self.metadata = json.load(f)
         
-        self.pairs = self.metadata.get("pairs", [])
+        self.compounds = self.metadata.get("compounds", [])
         
-        if len(self.pairs) == 0:
-            raise RuntimeError(f"No pairs found in metadata: {self.metadata_path}")
+        if len(self.compounds) == 0:
+            raise RuntimeError(f"No compounds found in metadata: {self.metadata_path}")
     
     def __len__(self) -> int:
-        """Return dataset size."""
-        return len(self.pairs)
+        """Return dataset size (number of compounds)."""
+        return len(self.compounds)
     
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> Dict[str, Dict[str, torch.Tensor]]:
         """
-        Get paired samples by index.
+        Get compound data organized by plate and type.
         
         Args:
-            idx: Sample index
+            idx: Compound index
             
         Returns:
-            Tuple of (treated_bioassay1, untreated_bioassay1, treated_bioassay2, untreated_bioassay2)
-            
-            If num_untreated_samples == 1:
-                - untreated samples are shape (C, H, W)
-                
-            If num_untreated_samples > 1:
-                - untreated samples are shape (N, C, H, W) where N = num_untreated_samples
-                - This allows averaging after model forward pass
+            Dict with structure:
+            {
+                "id": compound_id,
+                "plates": {
+                    "plate_1": {
+                        "treated": torch.Tensor of shape (N, C, H, W),
+                        "control": torch.Tensor of shape (M, C, H, W)
+                    },
+                    "plate_2": {
+                        "treated": torch.Tensor of shape (K, C, H, W),
+                        "control": torch.Tensor of shape (L, C, H, W)
+                    }
+                }
+            }
         """
-        pair = self.pairs[idx]
+        compound = self.compounds[idx]
+        compound_id = compound["id"]
         
-        # Load treated images
-        img_t1 = self._load_image(pair["bioassay_1_treated"])
-        img_t2 = self._load_image(pair["bioassay_2_treated"])
+        # Group by plate
+        plates_data = {}
         
-        # Load untreated images (may return single image or list of images)
-        untreated_u1 = self._load_untreated_images(pair["bioassay_1_untreated"])
-        untreated_u2 = self._load_untreated_images(pair["bioassay_2_untreated"])
-        
-        # Apply transforms - handle both single image and list of images
-        if self.transform:
-            img_t1 = self.transform(img_t1)
-            img_t2 = self.transform(img_t2)
+        # Extract all plate_X_treated and plate_X_control entries
+        for key, paths in compound.items():
+            if key == "id":
+                continue
             
-            # For untreated images
-            if isinstance(untreated_u1, list):
-                untreated_u1 = [self.transform(img) for img in untreated_u1]
-            else:
-                untreated_u1 = self.transform(untreated_u1)
-                
-            if isinstance(untreated_u2, list):
-                untreated_u2 = [self.transform(img) for img in untreated_u2]
-            else:
-                untreated_u2 = self.transform(untreated_u2)
-        
-        # Convert to tensors - stack if multiple samples
-        if isinstance(untreated_u1, list):
-            img_u1 = torch.stack(untreated_u1)  # Shape: (N, C, H, W)
-        else:
-            img_u1 = untreated_u1
+            # Parse key: "plate_X_treated" or "plate_X_control"
+            parts = key.rsplit("_", 1)  # Split from right to separate type
+            if len(parts) != 2:
+                continue
             
-        if isinstance(untreated_u2, list):
-            img_u2 = torch.stack(untreated_u2)  # Shape: (N, C, H, W)
-        else:
-            img_u2 = untreated_u2
+            plate_name, sample_type = parts  # e.g., "plate_1", "treated"
+            
+            if sample_type not in ["treated", "control"]:
+                continue
+            
+            if plate_name not in plates_data:
+                plates_data[plate_name] = {"treated": [], "control": []}
+            
+            # Load images
+            images = []
+            if isinstance(paths, list):
+                for path in paths:
+                    images.append(self._load_image(path))
+            else:
+                images.append(self._load_image(paths))
+            
+            # Apply transforms
+            if self.transform:
+                images = [self.transform(img) for img in images]
+            
+            # Stack into tensor
+            images_tensor = torch.stack(images)  # Shape: (N, C, H, W)
+            plates_data[plate_name][sample_type] = images_tensor
         
-        return img_t1, img_u1, img_t2, img_u2
+        # Ensure all plates have both treated and control
+        for plate_name in plates_data:
+            if "treated" not in plates_data[plate_name]:
+                raise ValueError(f"Compound {compound_id}: {plate_name} missing treated samples")
+            if "control" not in plates_data[plate_name]:
+                raise ValueError(f"Compound {compound_id}: {plate_name} missing control samples")
+        
+        return {
+            "id": compound_id,
+            "plates": plates_data
+        }
     
     def _load_image(self, image_path: str) -> Image.Image:
         """Load and convert image to RGB."""
         full_path = self.root_dir / image_path
+        if not full_path.exists():
+            raise FileNotFoundError(f"Image not found: {full_path}")
         image = Image.open(full_path).convert('RGB')
         return image
-    
-    def _load_untreated_images(self, untreated_paths):
-        """
-        Load untreated sample(s) without averaging.
-        
-        Args:
-            untreated_paths: Either a string (single path) or list of strings (multiple paths)
-                            
-        Returns:
-            PIL Image if single path, or list of PIL Images if multiple paths.
-            The caller will handle stacking them into a tensor.
-        """
-        # Handle both old format (single string) and new format (list of strings)
-        if isinstance(untreated_paths, str):
-            return self._load_image(untreated_paths)
-        
-        # Load multiple untreated samples as a list
-        if isinstance(untreated_paths, list):
-            images = [self._load_image(path) for path in untreated_paths]
-            return images
-        
-        raise ValueError(f"Unexpected untreated_paths type: {type(untreated_paths)}")
 
 
-def create_paired_metadata(
+def create_compound_plate_metadata(
     root_dir: str,
-    bioassay_1_dir: str = "bioassay_1",
-    bioassay_2_dir: str = "bioassay_2",
-    treated_dir: str = "treated",
-    untreated_dir: str = "untreated",
+    compound_mapping_file: str,
     output_file: str = "metadata.json",
-    num_untreated_samples: int = 1,
 ) -> None:
     """
-    Create metadata.json file by pairing samples from two bioassays.
+    Create metadata.json for compound-plate-well structure.
     
-    Assumes treated and untreated samples have matching filenames.
+    This function reads a compound mapping file that specifies which plates/wells
+    belong to which compound, then generates the metadata.json.
     
     Args:
-        root_dir: Root directory
-        bioassay_1_dir: Directory name for bioassay 1
-        bioassay_2_dir: Directory name for bioassay 2
-        treated_dir: Directory name for treated samples
-        untreated_dir: Directory name for untreated samples
+        root_dir: Root directory containing plate data
+        compound_mapping_file: JSON file mapping compounds to plates/wells.
+                              Format:
+                              {
+                                  "1": {
+                                      "plate_1": ["well_A1", "well_A2"],
+                                      "plate_2": ["well_B1"]
+                                  },
+                                  "2": {
+                                      "plate_1": ["well_C1"],
+                                      "plate_3": ["well_D1", "well_D2"]
+                                  }
+                              }
         output_file: Output metadata filename
-        num_untreated_samples: Number of untreated samples to group per treated sample.
-                              If > 1, each pair will have multiple untreated samples that will be averaged.
     """
     root = Path(root_dir)
     
-    # Get treated/untreated samples from both bioassays
-    treated_1_path = root / bioassay_1_dir / treated_dir
-    untreated_1_path = root / bioassay_1_dir / untreated_dir
-    treated_2_path = root / bioassay_2_dir / treated_dir
-    untreated_2_path = root / bioassay_2_dir / untreated_dir
+    if not root.exists():
+        raise FileNotFoundError(f"Root directory not found: {root}")
     
-    # Check all directories exist
-    for path in [treated_1_path, untreated_1_path, treated_2_path, untreated_2_path]:
-        if not path.exists():
-            raise FileNotFoundError(f"Directory not found: {path}")
+    # Load compound mapping
+    if not Path(compound_mapping_file).exists():
+        raise FileNotFoundError(f"Compound mapping file not found: {compound_mapping_file}")
     
-    # Get filenames
-    treated_1_files = sorted([f.name for f in treated_1_path.glob("*") if f.is_file()])
-    untreated_1_files = sorted([f.name for f in untreated_1_path.glob("*") if f.is_file()])
-    treated_2_files = sorted([f.name for f in treated_2_path.glob("*") if f.is_file()])
-    untreated_2_files = sorted([f.name for f in untreated_2_path.glob("*") if f.is_file()])
+    with open(compound_mapping_file, 'r') as f:
+        compound_mapping = json.load(f)
     
-    # Verify matching files
-    if not (len(treated_1_files) == len(treated_2_files)):
-        raise RuntimeError(
-            f"Mismatched treated file counts: "
-            f"T1={len(treated_1_files)}, T2={len(treated_2_files)}"
-        )
+    compounds = []
     
-    # Check that untreated files can be divided evenly
-    if len(untreated_1_files) % num_untreated_samples != 0:
-        raise RuntimeError(
-            f"Bioassay 1: {len(untreated_1_files)} untreated samples cannot be evenly divided "
-            f"into groups of {num_untreated_samples}"
-        )
-    
-    if len(untreated_2_files) % num_untreated_samples != 0:
-        raise RuntimeError(
-            f"Bioassay 2: {len(untreated_2_files)} untreated samples cannot be evenly divided "
-            f"into groups of {num_untreated_samples}"
-        )
-    
-    num_treated = len(treated_1_files)
-    expected_untreated_per_bioassay = num_treated * num_untreated_samples
-    
-    if len(untreated_1_files) != expected_untreated_per_bioassay:
-        raise RuntimeError(
-            f"Bioassay 1: Expected {expected_untreated_per_bioassay} untreated samples "
-            f"({num_treated} treated × {num_untreated_samples}), got {len(untreated_1_files)}"
-        )
-    
-    if len(untreated_2_files) != expected_untreated_per_bioassay:
-        raise RuntimeError(
-            f"Bioassay 2: Expected {expected_untreated_per_bioassay} untreated samples "
-            f"({num_treated} treated × {num_untreated_samples}), got {len(untreated_2_files)}"
-        )
-    
-    # Create pairs
-    pairs = []
-    for pair_idx in range(num_treated):
-        # Get the N untreated samples for this treated sample
-        start_idx = pair_idx * num_untreated_samples
-        end_idx = start_idx + num_untreated_samples
+    for compound_id, plates_dict in compound_mapping.items():
+        compound_entry = {"id": int(compound_id)}
         
-        u1_files = untreated_1_files[start_idx:end_idx]
-        u2_files = untreated_2_files[start_idx:end_idx]
+        for plate_name, wells in plates_dict.items():
+            # plate_name should be like "plate_1"
+            plate_path = root / plate_name
+            
+            if not plate_path.exists():
+                raise FileNotFoundError(f"Plate directory not found: {plate_path}")
+            
+            # Collect treated and control samples for this plate/well combination
+            treated_samples = []
+            control_samples = []
+            
+            for well_name in wells:
+                well_path = plate_path / well_name
+                
+                if not well_path.exists():
+                    raise FileNotFoundError(f"Well directory not found: {well_path}")
+                
+                # Get treated samples
+                treated_path = well_path / "treated"
+                if treated_path.exists():
+                    treated_files = sorted([f for f in treated_path.glob("*.png")])
+                    for f in treated_files:
+                        # Store relative path
+                        rel_path = f.relative_to(root)
+                        treated_samples.append(str(rel_path))
+                
+                # Get control samples
+                control_path = well_path / "control"
+                if control_path.exists():
+                    control_files = sorted([f for f in control_path.glob("*.png")])
+                    for f in control_files:
+                        # Store relative path
+                        rel_path = f.relative_to(root)
+                        control_samples.append(str(rel_path))
+            
+            if treated_samples:
+                compound_entry[f"{plate_name}_treated"] = treated_samples
+            if control_samples:
+                compound_entry[f"{plate_name}_control"] = control_samples
         
-        pair = {
-            "id": pair_idx,
-            "bioassay_1_treated": str(Path(bioassay_1_dir) / treated_dir / treated_1_files[pair_idx]),
-            "bioassay_1_untreated": [str(Path(bioassay_1_dir) / untreated_dir / f) for f in u1_files],
-            "bioassay_2_treated": str(Path(bioassay_2_dir) / treated_dir / treated_2_files[pair_idx]),
-            "bioassay_2_untreated": [str(Path(bioassay_2_dir) / untreated_dir / f) for f in u2_files],
-        }
-        pairs.append(pair)
+        # Verify compound has at least one plate with both treated and control
+        has_complete_plate = False
+        for key in compound_entry:
+            if key != "id":
+                plate_name = key.rsplit("_", 1)[0]
+                treated_key = f"{plate_name}_treated"
+                control_key = f"{plate_name}_control"
+                if treated_key in compound_entry and control_key in compound_entry:
+                    has_complete_plate = True
+                    break
+        
+        if not has_complete_plate:
+            raise RuntimeError(
+                f"Compound {compound_id} does not have any plate with both treated and control"
+            )
+        
+        compounds.append(compound_entry)
     
     # Save metadata
-    metadata = {"pairs": pairs, "num_untreated_samples": num_untreated_samples}
+    metadata = {"compounds": compounds}
     output_path = root / output_file
     with open(output_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
-    print(f"Created metadata with {len(pairs)} pairs "
-          f"({num_untreated_samples} untreated samples per treated) at {output_path}")
+    print(f"Created metadata with {len(compounds)} compounds at {output_path}")
+
+
+def auto_create_compound_plate_metadata(
+    root_dir: str,
+    output_file: str = "metadata.json",
+) -> None:
+    """
+    Automatically create metadata by scanning directory structure.
+    
+    Assumes directory structure: plate_X/well_Y/type/*.png
+    
+    Creates a compound ID mapping based on alphabetical ordering of plates and wells.
+    Each unique (plate, well, type) combination gets assigned samples.
+    
+    Args:
+        root_dir: Root directory containing plate data
+        output_file: Output metadata filename
+    """
+    root = Path(root_dir)
+    
+    if not root.exists():
+        raise FileNotFoundError(f"Root directory not found: {root}")
+    
+    # Scan directory structure
+    plate_dirs = sorted([d for d in root.iterdir() 
+                        if d.is_dir() and d.name.startswith("plate_")])
+    
+    if not plate_dirs:
+        raise RuntimeError(f"No plate directories found in {root}")
+    
+    # Collect all samples by (plate, well, type)
+    samples_by_key = defaultdict(list)  # (plate_name, well_name) -> {"treated": [], "control": []}
+    
+    for plate_dir in plate_dirs:
+        plate_name = plate_dir.name
+        well_dirs = sorted([d for d in plate_dir.iterdir() if d.is_dir()])
+        
+        for well_dir in well_dirs:
+            well_name = well_dir.name
+            
+            # Check for treated and control subdirectories
+            treated_dir = well_dir / "treated"
+            control_dir = well_dir / "control"
+            
+            key = (plate_name, well_name)
+            
+            if treated_dir.exists():
+                treated_files = sorted([f for f in treated_dir.glob("*.png")])
+                for f in treated_files:
+                    rel_path = f.relative_to(root)
+                    samples_by_key[key].append(("treated", str(rel_path)))
+            
+            if control_dir.exists():
+                control_files = sorted([f for f in control_dir.glob("*.png")])
+                for f in control_files:
+                    rel_path = f.relative_to(root)
+                    samples_by_key[key].append(("control", str(rel_path)))
+    
+    # Create compounds by grouping plates/wells
+    # Simple strategy: one compound per well (across all plates it appears in)
+    well_to_compound = {}  # well_name -> compound_id
+    compound_id = 1
+    
+    all_wells = sorted(set(well for _, well in samples_by_key.keys()))
+    for well_name in all_wells:
+        well_to_compound[well_name] = compound_id
+        compound_id += 1
+    
+    compounds = defaultdict(lambda: defaultdict(list))
+    
+    for (plate_name, well_name), samples in samples_by_key.items():
+        cid = well_to_compound[well_name]
+        
+        for sample_type, path in samples:
+            key = f"{plate_name}_{sample_type}"
+            compounds[cid][key].append(path)
+    
+    # Convert to list format
+    compounds_list = []
+    for cid in sorted(compounds.keys()):
+        entry = {"id": cid}
+        entry.update(compounds[cid])
+        compounds_list.append(entry)
+    
+    # Save metadata
+    metadata = {"compounds": compounds_list}
+    output_path = root / output_file
+    with open(output_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    print(f"Auto-created metadata with {len(compounds_list)} compounds "
+          f"from {len(plate_dirs)} plates at {output_path}")
 
 
 def get_default_transforms(
