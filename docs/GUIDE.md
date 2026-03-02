@@ -205,7 +205,7 @@ This is useful when you want to enforce both:
 ### Basic Training with L2 Distance
 
 ```bash
-python scripts/train_triple_check.py \
+python scripts/check.py \
   --data-dir data/paired_bioassay \
   --distance-metric l2 \
   --num-epochs 50 \

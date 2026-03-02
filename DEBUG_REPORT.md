@@ -39,10 +39,10 @@ if hasattr(module, 'proj') and isinstance(module.proj, nn.Linear):
 
 ---
 
-### 2. **Training Mode Bug in triple_check_trainer.py (Line 128)** ❌ → ✅
+### 2. **Training Mode Bug in trainer.py (Line 128)** ❌ → ✅
 
 **Issue**: Model set to eval mode during training  
-**File**: `src/training/triple_check_trainer.py`  
+**File**: `src/training/trainer.py`  
 **Severity**: Medium
 
 **Original Code**:
@@ -117,16 +117,13 @@ All 23 Python files passed syntax checking:
 - `src/models/lora.py` ✅
 - `src/models/dino_lora.py` ✅
 - `src/training/trainer.py` ✅
-- `src/training/triple_check_trainer.py` ✅
-- `src/data/paired_dataset.py` ✅
-- `src/losses/triple_check_loss.py` ✅
+- `src/data/dataset.py` ✅
+- `src/losses/loss.py` ✅
 - `src/evaluation/evaluator.py` ✅
-- `scripts/train.py` ✅
 - `scripts/check.py` ✅
 - `scripts/evaluate.py` ✅
 - `setup.py` ✅
-- `quick_start.py` ✅
-- And 11 other files ✅
+- And 14 other files ✅
 
 ### Import Validation ✅
 All required dependencies found:
