@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
-from src.data import create_dataloader, PairedBioassayDataset, get_default_transforms
+from src.data import create_dataloader, CompoundPlateDataset, get_default_transforms
 from src.evaluation import Evaluator
 from src.utils import setup_logger, load_config
 
@@ -135,7 +135,7 @@ def main():
         image_size=config["data"]["image_size"],
         is_train=False,
     )
-    eval_dataset = PairedBioassayDataset(
+    eval_dataset = CompoundPlateDataset(
         root_dir=args.data_dir,
         transform=eval_transform,
     )

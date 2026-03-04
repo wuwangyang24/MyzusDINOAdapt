@@ -60,14 +60,10 @@ python scripts/train.py \
 
 Use Python to create the metadata:
 ```python
-from src.data import create_paired_metadata
+from src.data import auto_create_compound_plate_metadata
 
-create_paired_metadata(
+auto_create_compound_plate_metadata(
     root_dir="paired_bioassay_data",
-    bioassay_1_dir="bioassay_1",
-    bioassay_2_dir="bioassay_2",
-    treated_dir="treated",
-    untreated_dir="untreated",
     output_file="metadata.json"
 )
 ```
@@ -230,7 +226,7 @@ python scripts/train.py \
 ```python
 from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckWithContrastiveLoss
-from src.data import PairedBioassayDataset, get_default_transforms
+from src.data import CompoundPlateDataset, get_default_transforms
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from src.training import TripleCheckModule
@@ -251,7 +247,7 @@ loss_fn = TripleCheckWithContrastiveLoss(
 
 # Create datasets
 transform = get_default_transforms(image_size=224, is_train=True)
-dataset = PairedBioassayDataset(
+dataset = CompoundPlateDataset(
     root_dir="data/paired_bioassay",
     transform=transform
 )

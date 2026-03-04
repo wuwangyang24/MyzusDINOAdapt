@@ -150,7 +150,7 @@ All required dependencies found:
 1. Test LoRA layer forward/backward pass
 2. Test DINOWithLoRA model initialization
 3. Test TripleCheckLoss computation
-4. Test PairedBioassayDataset loading
+4. Test CompoundPlateDataset loading
 5. Test config loading with various formats
 
 ### Integration Tests

@@ -24,7 +24,7 @@ def create_dataloader(
         is_train: Deprecated. Configure transforms in your dataset
         image_size: Deprecated. Configure transforms in your dataset
         shuffle: Whether to shuffle data
-        dataset: Dataset instance (required - use PairedBioassayDataset)
+        dataset: Dataset instance (required - use CompoundPlateDataset)
         
     Returns:
         DataLoader instance
@@ -32,7 +32,7 @@ def create_dataloader(
     if dataset is None:
         raise ValueError(
             "dataset parameter is required. "
-            "Use PairedBioassayDataset for paired bioassay data."
+            "Use CompoundPlateDataset for compound plate data."
         )
     
     dataloader = DataLoader(

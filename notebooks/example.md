@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from src.models import DINOWithLoRA, LoRAConfig
 from src.losses import TripleCheckLoss, TripleCheckWithContrastiveLoss
-from src.data import PairedBioassayDataset, create_paired_metadata, get_default_transforms
+from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
@@ -24,18 +24,12 @@ from src.utils import setup_logger
 ### Option A: Auto-generate metadata.json with Multiple Untreated Samples
 
 ```python
-from src.data import create_paired_metadata
+from src.data import auto_create_compound_plate_metadata
 
 # Create metadata from directory structure
-# num_untreated_samples=3 means each treated sample will be paired with 3 untreated samples
-# These will be averaged after passing through the model
-create_paired_metadata(
+# Scans for plate_*/well_*/{treated|control}/*.png
+auto_create_compound_plate_metadata(
     root_dir="path/to/paired_bioassay_data",
-    bioassay_1_dir="bioassay_1",
-    bioassay_2_dir="bioassay_2",
-    treated_dir="treated",
-    untreated_dir="untreated",
-    num_untreated_samples=3  # Default: 1
 )
 ```
 
@@ -73,19 +67,16 @@ print(f"Model created with {sum(p.numel() for p in model.parameters() if p.requi
 
 ```python
 # Create datasets
-# num_untreated_samples must match the value used in create_paired_metadata
 transform = get_default_transforms(image_size=224, is_train=True)
 
-train_dataset = PairedBioassayDataset(
+train_dataset = CompoundPlateDataset(
     root_dir="path/to/paired_bioassay_data/train",
     transform=transform,
-    num_untreated_samples=3  # Match the value from metadata creation
 )
 
-val_dataset = PairedBioassayDataset(
+val_dataset = CompoundPlateDataset(
     root_dir="path/to/paired_bioassay_data/val",
     transform=get_default_transforms(image_size=224, is_train=False),
-    num_untreated_samples=3  # Match the value from metadata creation
 )
 
 # Create dataloaders

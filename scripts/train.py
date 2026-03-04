@@ -9,7 +9,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss
-from src.data import PairedBioassayDataset, create_paired_metadata, get_default_transforms
+from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms
 from src.training import TripleCheckModule
 from src.utils import setup_logger, load_config
 from torch.utils.data import DataLoader
@@ -152,7 +152,7 @@ def main():
     # Create metadata if needed
     if args.create_metadata:
         logger.info("Creating metadata from directory structure...")
-        create_paired_metadata(args.data_dir)
+        auto_create_compound_plate_metadata(args.data_dir)
 
     # Create model based on adaptation method
     logger.info(f"Creating model: {config['model']['backbone']} with {adaptation_method.upper()}")
@@ -196,10 +196,9 @@ def main():
         image_size=config["data"]["image_size"],
         is_train=True
     )
-    train_dataset = PairedBioassayDataset(
+    train_dataset = CompoundPlateDataset(
         root_dir=args.data_dir,
         transform=transform,
-        num_untreated_samples=config["data"].get("num_untreated_samples", 1),
     )
     train_dataloader = DataLoader(
         train_dataset,
@@ -216,10 +215,9 @@ def main():
             image_size=config["data"]["image_size"],
             is_train=False
         )
-        val_dataset = PairedBioassayDataset(
+        val_dataset = CompoundPlateDataset(
             root_dir=args.val_data_dir,
             transform=val_transform,
-            num_untreated_samples=config["data"].get("num_untreated_samples", 1),
         )
         val_dataloader = DataLoader(
             val_dataset,
