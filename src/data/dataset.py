@@ -42,7 +42,7 @@ class CompoundPlateDataset(Dataset):
     {
         "compounds": [
             {
-                "id": 1,
+                "id": "1",
                 "94000": {
                     "treated": ["94000/well_2_1/treated/sample_1.png", ...],
                     "control": ["94000/well_1_3/control/sample_1.png", ...]
@@ -53,7 +53,7 @@ class CompoundPlateDataset(Dataset):
                 }
             },
             {
-                "id": 2,
+                "id": "2",
                 ...
             }
         ]
@@ -364,7 +364,7 @@ def auto_create_compound_plate_metadata(
     
     # Create a single compound with all plates
     compounds = [{
-        "id": 1,
+        "id": "1",
         **plates_data
     }]
     
