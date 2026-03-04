@@ -381,6 +381,8 @@ def parse_args() -> argparse.Namespace:
                    help="Torch device. Auto-detected if not specified.")
     p.add_argument("--seed",        type=int, default=42, help="Random seed. Default: 42")
     p.add_argument("--num_workers", type=int, default=0,  help="DataLoader workers. Default: 0")
+    p.add_argument("--save_predictions", action="store_true",
+                   help="Save validation predictions + ground truth to predictions.csv")
 
     return p.parse_args()
 
@@ -544,13 +546,21 @@ def main() -> None:
     model.load_state_dict(torch.load(output_dir / "best_model.pt", map_location=device))
     model.eval()
 
-    all_preds, all_labels = [], []
+    all_preds:  List[int] = []
+    all_labels: List[int] = []
+    all_cids:   List[int] = []
+    all_probs:  List[List[float]] = []
+
     with torch.no_grad():
-        for padded, mask, labels, _ in val_loader:
+        for padded, mask, labels, cids in val_loader:
             padded, mask = padded.to(device), mask.to(device)
-            preds = model(padded, padding_mask=mask).argmax(dim=1).cpu().tolist()
+            logits = model(padded, padding_mask=mask)             # (B, num_classes)
+            probs  = torch.softmax(logits, dim=1).cpu().tolist()  # (B, num_classes)
+            preds  = logits.argmax(dim=1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels.tolist())
+            all_cids.extend(cids.tolist())
+            all_probs.extend(probs)
 
     print("\nClassification Report (validation set):")
     print(classification_report(
@@ -559,6 +569,25 @@ def main() -> None:
         zero_division=0,
     ))
     print(f"\nBest val accuracy : {best_val_acc:.4f}")
+
+    # ── Save predictions DataFrame ────────────────────────────────────────────
+    if args.save_predictions:
+        pred_rows = {
+            "compound_id":      all_cids,
+            "true_label":       [classes[i] for i in all_labels],
+            "predicted_label":  [classes[i] for i in all_preds],
+            "correct":          [t == p for t, p in zip(all_labels, all_preds)],
+        }
+        # Add one probability column per class
+        prob_array = np.array(all_probs)   # (N, num_classes)
+        for cls_idx, cls_name in enumerate(classes):
+            pred_rows[f"prob_{cls_name}"] = prob_array[:, cls_idx].tolist()
+
+        pred_df = pd.DataFrame(pred_rows)
+        pred_path = output_dir / "predictions.csv"
+        pred_df.to_csv(pred_path, index=False)
+        print(f"Predictions saved to: {pred_path}")
+
     print(f"Outputs saved to  : {output_dir}")
 
 
