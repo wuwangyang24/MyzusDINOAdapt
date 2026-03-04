@@ -5,7 +5,7 @@ import torch
 from pathlib import Path
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
-from src.data import create_dataloader
+from src.data import create_dataloader, PairedBioassayDataset, get_default_transforms
 from src.evaluation import Evaluator
 from src.utils import setup_logger, load_config
 
@@ -114,18 +114,39 @@ def main():
     
     # Load checkpoint
     logger.info(f"Loading checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location=args.device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    checkpoint = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+    # Handle both Lightning and plain checkpoints
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+        # Lightning wraps model under 'model.' prefix
+        state_dict = {
+            k.replace("model.", "", 1) if k.startswith("model.") else k: v
+            for k, v in state_dict.items()
+        }
+    elif "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+    model.load_state_dict(state_dict, strict=False)
     
     # Create data loader
     logger.info(f"Loading evaluation data from: {args.data_dir}")
+    eval_transform = get_default_transforms(
+        image_size=config["data"]["image_size"],
+        is_train=False,
+    )
+    eval_dataset = PairedBioassayDataset(
+        root_dir=args.data_dir,
+        transform=eval_transform,
+    )
     dataloader = create_dataloader(
-        args.data_dir,
+        data_dir=args.data_dir,
         batch_size=args.batch_size,
         num_workers=4,
         is_train=False,
         image_size=config["data"]["image_size"],
         shuffle=False,
+        dataset=eval_dataset,
     )
     
     # Evaluate

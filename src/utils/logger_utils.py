@@ -25,6 +25,10 @@ def setup_logger(
     logger = logging.getLogger(name)
     logger.setLevel(level)
     
+    # Avoid adding duplicate handlers on repeated calls
+    if logger.handlers:
+        return logger
+    
     # Console handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
