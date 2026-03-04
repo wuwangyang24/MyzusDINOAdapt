@@ -20,7 +20,7 @@ Inputs
                     { compound_id: { plate_id: {"treated": (N,D), "control": (D,)} } }
 
   --metadata     CSV / Excel file with at least two columns:
-                    "compound"           (int)  — must match compound_id keys in .pt file
+                    "compound"           (str)  — must match compound_id keys in .pt file
                     "synthesis_program"  (str)  — class label
 
 Usage examples
@@ -85,7 +85,7 @@ class CompoundSynthesisDataset(Dataset):
         averaged control embedding subtracted before stacking.
     label   : int
         Integer class index of the synthesis program.
-    compound_id : int
+    compound_id : str
         Original compound identifier (useful for debugging).
     """
 
@@ -98,15 +98,15 @@ class CompoundSynthesisDataset(Dataset):
         subtract_control: bool = False,
     ):
         self.subtract_control = subtract_control
-        self.samples: List[Tuple[torch.Tensor, int, int]] = []
+        self.samples: List[Tuple[torch.Tensor, int, str]] = []
 
         # Build compound → label map from the DataFrame columns
-        comp2label: Dict[int, int] = {}
+        comp2label: Dict[str, int] = {}
         for comp, prog in zip(compound_col, label_col):
-            comp2label[int(comp)] = label2idx[str(prog)]
+            comp2label[str(comp)] = label2idx[str(prog)]
 
         for compound_id, plates in embeddings.items():
-            cid = int(compound_id)
+            cid = str(compound_id)
             if cid not in comp2label:
                 continue
 
@@ -137,8 +137,8 @@ class CompoundSynthesisDataset(Dataset):
 
 
 def collate_fn(
-    batch: List[Tuple[torch.Tensor, int, int]]
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    batch: List[Tuple[torch.Tensor, int, str]]
+) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
     """
     Pad variable-length bags to the max bag size in the batch.
 
@@ -147,7 +147,7 @@ def collate_fn(
     padded   : (B, max_M, D)
     mask     : (B, max_M)  — True means 'ignore this position' (padding)
     labels   : (B,)
-    cids     : (B,)
+    cids     : List[str]
     """
     latents_list, labels, cids = zip(*batch)
     max_m = max(t.shape[0] for t in latents_list)
@@ -165,7 +165,7 @@ def collate_fn(
         padded,
         mask,
         torch.tensor(labels, dtype=torch.long),
-        torch.tensor(cids,   dtype=torch.long),
+        list(cids),
     )
 
 
@@ -552,7 +552,7 @@ def main() -> None:
 
     all_preds:  List[int] = []
     all_labels: List[int] = []
-    all_cids:   List[int] = []
+    all_cids:   List[str] = []
     all_probs:  List[List[float]] = []
 
     with torch.no_grad():
@@ -563,7 +563,7 @@ def main() -> None:
             preds  = logits.argmax(dim=1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels.tolist())
-            all_cids.extend(cids.tolist())
+            all_cids.extend(cids)
             all_probs.extend(probs)
 
     print("\nClassification Report (validation set):")

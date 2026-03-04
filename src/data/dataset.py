@@ -232,7 +232,7 @@ def create_compound_plate_metadata(
     compounds = []
     
     for compound_id, plates_dict in compound_mapping.items():
-        compound_entry = {"id": int(compound_id)}
+        compound_entry = {"id": str(compound_id)}
         
         for plate_name, types_dict in plates_dict.items():
             # plate_name should be like "plate_1"

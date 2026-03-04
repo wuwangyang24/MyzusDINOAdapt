@@ -77,7 +77,7 @@ The metadata file must be a **JSON file** containing either:
 ```
 
 **Key rules:**
-- Every entry must have a `"Compound"` key (integer ID).
+- Every entry must have a `"Compound"` key (string ID).
 - All other top-level keys are treated as **plate identifiers** (strings).
 - Image paths are **relative to `--root_dir`**.
 - Both `"treated"` and `"control"` lists are optional per plate, but a warning is printed if either is missing.
@@ -90,7 +90,7 @@ The output is a PyTorch `.pt` file containing a nested Python dict:
 
 ```
 {
-    <compound_id: int>: {
+    <compound_id: str>: {
         <plate_id: str>: {
             "treated": torch.Tensor,   # shape (N, D) — one row per treated image
             "control": torch.Tensor,   # shape (D,)   — mean of all control embeddings

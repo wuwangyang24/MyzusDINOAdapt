@@ -11,7 +11,7 @@ For each compound and each plate:
 Metadata format (list of dicts, one per compound):
     [
         {
-            "Compound": 1,
+            "Compound": "1",
             "94000": {
                 "treated": ["94000/well_2_1/treated/sample_1.png", ...],
                 "control": ["94000/well_1_3/control/sample_1.png", ...]
@@ -22,14 +22,14 @@ Metadata format (list of dicts, one per compound):
             }
         },
         {
-            "Compound": 2,
+            "Compound": "2",
             ...
         }
     ]
 
 Output .pt file structure (dict):
     {
-        <compound_id (int)>: {
+        <compound_id (str)>: {
             <plate_id (str)>: {
                 "treated": torch.Tensor,   # shape (N, D) — one row per image
                 "control": torch.Tensor,   # shape (D,)   — averaged across all controls
@@ -314,7 +314,7 @@ def encode_metadata(
     result: Dict = {}
 
     for compound_entry in tqdm(metadata, desc="Compounds", unit="compound"):
-        compound_id: int = compound_entry[COMPOUND_KEY]
+        compound_id: str = str(compound_entry[COMPOUND_KEY])
         result[compound_id] = {}
 
         # All keys that are NOT "Compound" are plate identifiers

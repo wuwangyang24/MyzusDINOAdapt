@@ -84,7 +84,7 @@ Output of `encode_embeddings.py`. A `.pt` file with this structure:
 
 ```python
 {
-    compound_id (int): {
+    compound_id (str): {
         plate_id (str): {
             "treated": torch.Tensor,   # shape (N, D)
             "control": torch.Tensor,   # shape (D,)  — averaged controls
@@ -107,7 +107,7 @@ A CSV or Excel (`.xlsx`) file with at least two columns:
 | ...      | ...              |
 
 - Column names are configurable via `--compound_col` and `--label_col`.
-- Compound IDs must match the integer keys in the embeddings file.
+- Compound IDs must match the string keys in the embeddings file.
 - Rows with missing values are automatically dropped.
 
 ---
@@ -288,7 +288,7 @@ All outputs are saved to `--output_dir` (default: `Experiments/runs/classifier/`
 
 | Column | Description |
 |--------|-------------|
-| `compound_id` | Integer compound identifier |
+| `compound_id` | String compound identifier |
 | `true_label` | Ground-truth synthesis program name |
 | `predicted_label` | Model-predicted synthesis program name |
 | `correct` | `True` / `False` — whether prediction matches ground truth |
@@ -345,7 +345,7 @@ with torch.no_grad():
 | Problem | Solution |
 |---------|----------|
 | `ValueError: Metadata is missing column(s)` | Check `--compound_col` and `--label_col` match your CSV headers exactly (case-sensitive) |
-| `RuntimeError: Dataset is empty` | Verify compound IDs in the embeddings `.pt` file are integers matching the metadata `compound` column |
+| `RuntimeError: Dataset is empty` | Verify compound IDs in the embeddings `.pt` file are strings matching the metadata `compound` column |
 | CUDA out of memory | Reduce `--batch_size`; compounds with many treated images consume more memory |
 | `d_model` not divisible by `nhead` | `d_model` must be divisible by `nhead` (e.g. d_model=256, nhead=8 ✓) |
 | Training loss not decreasing | Try lowering `--lr`, increasing `--num_layers`, or enabling `--subtract_control` |
