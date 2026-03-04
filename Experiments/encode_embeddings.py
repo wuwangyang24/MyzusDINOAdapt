@@ -96,8 +96,7 @@ from src.models.dora import DoRAConfig
 # DINO standard preprocessing (matches the pretrained model's training setup)
 # ---------------------------------------------------------------------------
 DINO_TRANSFORM = transforms.Compose([
-    transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
-    transforms.CenterCrop(224),
+    transforms.Resize(224, interpolation=transforms.InterpolationMode.BICUBIC),
     transforms.ToTensor(),
     transforms.Normalize(mean=(0.485, 0.456, 0.406),
                          std=(0.229, 0.224, 0.225)),
