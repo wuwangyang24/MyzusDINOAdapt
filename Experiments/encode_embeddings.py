@@ -132,13 +132,15 @@ def _load_checkpoint(model: nn.Module, weights_path: str) -> None:
     path = Path(weights_path)
     if not path.exists():
         raise FileNotFoundError(f"Weights file not found: {path}")
-    ckpt = torch.load(path, map_location="cpu")
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(ckpt, dict):
-        state_dict = (
-            ckpt.get("state_dict")
-            or ckpt.get("model_state_dict")
-            or ckpt
-        )
+        # Use explicit `is not None` to avoid falsy empty-dict pitfall
+        if ckpt.get("state_dict") is not None:
+            state_dict = ckpt["state_dict"]
+        elif ckpt.get("model_state_dict") is not None:
+            state_dict = ckpt["model_state_dict"]
+        else:
+            state_dict = ckpt   # raw state-dict
     else:
         state_dict = ckpt
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
@@ -233,8 +235,8 @@ def load_model(
             "Choose from: dino, dino_lora, dino_dora."
         )
 
-    model.eval()
     model.to(device)
+    model.eval()
     _freeze(model)
     print(f"  ✓ Model ready  "
           f"(feature dim ≈ {BACKBONE_DIM.get(backbone_name, '?')})")

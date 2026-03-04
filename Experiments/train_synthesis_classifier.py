@@ -49,7 +49,6 @@ Output
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -306,7 +305,7 @@ def run_epoch(
                 optimizer.step()
 
             total_loss += loss.item() * labels.size(0)
-            preds = logits.argmax(dim=1).cpu().tolist()
+            preds = logits.detach().argmax(dim=1).cpu().tolist()
             all_preds.extend(preds)
             all_labels.extend(labels.cpu().tolist())
 
@@ -411,7 +410,7 @@ def main() -> None:
 
     # ── Load embeddings ───────────────────────────────────────────────────────
     print(f"Loading embeddings : {args.embeddings}")
-    embeddings: Dict = torch.load(args.embeddings, map_location="cpu")
+    embeddings: Dict = torch.load(args.embeddings, map_location="cpu", weights_only=False)
     print(f"  {len(embeddings)} compounds found in embeddings file.")
 
     # ── Load metadata ─────────────────────────────────────────────────────────
@@ -458,6 +457,11 @@ def main() -> None:
     # ── Train / val split ─────────────────────────────────────────────────────
     n_val   = max(1, int(len(full_dataset) * args.val_split))
     n_train = len(full_dataset) - n_val
+    if n_train < 1:
+        raise RuntimeError(
+            f"Dataset has only {len(full_dataset)} compound(s) — not enough for a "
+            f"train/val split of {args.val_split}. Reduce --val_split or add more data."
+        )
     train_set, val_set = random_split(
         full_dataset, [n_train, n_val],
         generator=torch.Generator().manual_seed(args.seed),
@@ -543,7 +547,7 @@ def main() -> None:
 
     # ── Final evaluation with best model ──────────────────────────────────────
     print(f"\nLoading best model for final evaluation...")
-    model.load_state_dict(torch.load(output_dir / "best_model.pt", map_location=device))
+    model.load_state_dict(torch.load(output_dir / "best_model.pt", map_location=device, weights_only=False))
     model.eval()
 
     all_preds:  List[int] = []
