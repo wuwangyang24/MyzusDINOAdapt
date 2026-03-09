@@ -1,7 +1,7 @@
 """
 encode_embeddings.py
 
-Encode all images in a metadata file using a pretrained DINO backbone.
+Encode all images in a metadata file using a pretrained DINO or DINOv2 backbone.
 
 For each compound and each plate:
   - treated images are encoded individually and stored as a (N, D) tensor.
@@ -48,6 +48,22 @@ Usage:
         --batch_size 64 \\
         --device     cuda
 
+    # Plain pretrained DINOv2
+    python encode_embeddings.py \\
+        --metadata   /path/to/metadata.json \\
+        --root_dir   /path/to/images \\
+        --output     /path/to/embeddings.pt \\
+        --backbone   dinov2_vitb14 \\
+        --model_type dino
+
+    # DINOv2 with register tokens
+    python encode_embeddings.py \\
+        --metadata   /path/to/metadata.json \\
+        --root_dir   /path/to/images \\
+        --output     /path/to/embeddings.pt \\
+        --backbone   dinov2_vitl14_reg \\
+        --model_type dino
+
     # DINO + LoRA  (load fine-tuned weights from a checkpoint)
     python encode_embeddings.py \\
         --metadata     /path/to/metadata.json \\
@@ -58,12 +74,32 @@ Usage:
         --weights_path /path/to/lora_checkpoint.pt \\
         --lora_r       8 --lora_alpha 16.0
 
+    # DINOv2 + LoRA
+    python encode_embeddings.py \\
+        --metadata     /path/to/metadata.json \\
+        --root_dir     /path/to/images \\
+        --output       /path/to/embeddings.pt \\
+        --backbone     dinov2_vitb14 \\
+        --model_type   dino_lora \\
+        --weights_path /path/to/lora_checkpoint.pt \\
+        --lora_r       8 --lora_alpha 16.0
+
     # DINO + DoRA  (load fine-tuned weights from a checkpoint)
     python encode_embeddings.py \\
         --metadata     /path/to/metadata.json \\
         --root_dir     /path/to/images \\
         --output       /path/to/embeddings.pt \\
         --backbone     dino_vitb16 \\
+        --model_type   dino_dora \\
+        --weights_path /path/to/dora_checkpoint.pt \\
+        --dora_r       8 --dora_alpha 16.0
+
+    # DINOv2 + DoRA
+    python encode_embeddings.py \\
+        --metadata     /path/to/metadata.json \\
+        --root_dir     /path/to/images \\
+        --output       /path/to/embeddings.pt \\
+        --backbone     dinov2_vitb14 \\
         --model_type   dino_dora \\
         --weights_path /path/to/dora_checkpoint.pt \\
         --dora_r       8 --dora_alpha 16.0
@@ -104,12 +140,22 @@ DINO_TRANSFORM = transforms.Compose([
 
 # Mapping backbone name → CLS-token feature dimension (for reference / assertions)
 BACKBONE_DIM = {
+    # DINOv1
     "dino_vits8":  384,
     "dino_vits16": 384,
     "dino_vitb8":  768,
     "dino_vitb16": 768,
     "dino_vitl14": 1024,
     "dino_vitg14": 1536,
+    # DINOv2
+    "dinov2_vits14":     384,
+    "dinov2_vitb14":     768,
+    "dinov2_vitl14":     1024,
+    "dinov2_vitg14":     1536,
+    "dinov2_vits14_reg": 384,
+    "dinov2_vitb14_reg": 768,
+    "dinov2_vitl14_reg": 1024,
+    "dinov2_vitg14_reg": 1536,
 }
 
 
@@ -172,7 +218,8 @@ def load_model(
 
     Args:
         model_type:      One of 'dino', 'dino_lora', 'dino_dora'.
-        backbone_name:   DINO backbone variant (e.g. 'dino_vitb16').
+        backbone_name:   DINO/DINOv2 backbone variant (e.g. 'dino_vitb16',
+                         'dinov2_vitb14', 'dinov2_vitl14_reg').
         device:          Torch device.
         weights_path:    Optional path to a fine-tuned checkpoint (.pt/.pth).
                          Required for 'dino_lora' / 'dino_dora' if you want to
@@ -194,9 +241,15 @@ def load_model(
         hub_source_dir=hub_source_dir,
     )
 
+    hub_repo = (
+        "facebookresearch/dinov2:main"
+        if backbone_name.startswith("dinov2_")
+        else "facebookresearch/dino:main"
+    )
+
     if model_type == "dino":
         model = torch.hub.load(
-            "facebookresearch/dino:main"
+            hub_repo
             if hub_source == "github"
             else hub_source_dir,
             backbone_name,
@@ -232,7 +285,8 @@ def load_model(
     else:
         raise ValueError(
             f"Unknown model_type '{model_type}'. "
-            "Choose from: dino, dino_lora, dino_dora."
+            "Choose from: dino, dino_lora, dino_dora. "
+            "Both DINOv1 and DINOv2 backbones are supported."
         )
 
     model.to(device)
@@ -384,7 +438,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--backbone", type=str, default="dino_vitb16",
         choices=list(BACKBONE_DIM.keys()),
-        help="DINO backbone variant. Default: dino_vitb16",
+        help="DINO/DINOv2 backbone variant. Default: dino_vitb16",
     )
     parser.add_argument(
         "--weights_path", type=str, default=None,

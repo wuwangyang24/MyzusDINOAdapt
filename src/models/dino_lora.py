@@ -11,7 +11,7 @@ class DINOWithLoRA(nn.Module):
     """
     DINO model with LoRA adaptation.
     
-    Supports adapting DINO backbones (dino_vitb16, dino_vits14, etc.)
+    Supports adapting DINO and DINOv2 backbones (dino_vitb16, dinov2_vitb14, etc.)
     with low-rank adaptation for efficient fine-tuning.
     """
     
@@ -28,7 +28,7 @@ class DINOWithLoRA(nn.Module):
         Initialize DINO with LoRA adaptation.
         
         Args:
-            backbone_name: Name of DINO backbone (dino_vitb16, dino_vits14, etc.)
+            backbone_name: Name of DINO/DINOv2 backbone (dino_vitb16, dinov2_vitb14, etc.)
             lora_config: LoRA configuration
             num_classes: Number of output classes (optional, for classification head)
             hub_source: Source for torch.hub ("github" or "local"), defaults to "github"
@@ -37,7 +37,12 @@ class DINOWithLoRA(nn.Module):
         """
         super().__init__()
         
-        # Load DINO backbone
+        # Load DINO / DINOv2 backbone
+        hub_repo = (
+            'facebookresearch/dinov2:main'
+            if backbone_name.startswith('dinov2_')
+            else 'facebookresearch/dino:main'
+        )
         try:
             if hub_source.lower() == "local":
                 if hub_source_dir is None:
@@ -52,7 +57,7 @@ class DINOWithLoRA(nn.Module):
                 )
             else:
                 self.backbone = torch.hub.load(
-                    'facebookresearch/dino:main',
+                    hub_repo,
                     backbone_name,
                 )
         except Exception as e:
