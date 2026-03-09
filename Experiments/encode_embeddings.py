@@ -105,6 +105,15 @@ Usage:
         --model_type   dino_dora \\
         --weights_path /path/to/dora_checkpoint.pt \\
         --dora_r       8 --dora_alpha 16.0
+
+    # Custom VAE encoder
+    python encode_embeddings.py \\
+        --metadata       /path/to/metadata.json \\
+        --root_dir       /path/to/images \\
+        --output         /path/to/embeddings.pt \\
+        --model_type     custom_vae \\
+        --vae_checkpoint /path/to/tiltedvae2.ckpt \\
+        --vae_latent_dim 100
 """
 
 import argparse
@@ -128,6 +137,7 @@ from src.models.dino_lora import DINOWithLoRA
 from src.models.dino_dora import DINOWithDoRA
 from src.models.lora import LoRAConfig
 from src.models.dora import DoRAConfig
+from VAE.model2 import Encoder
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +148,12 @@ DINO_TRANSFORM = transforms.Compose([
     transforms.ConvertImageDtype(torch.float32),
     transforms.Normalize(mean=(0.485, 0.456, 0.406),
                          std=(0.229, 0.224, 0.225)),
+])
+
+# VAE preprocessing (96×64 input, [0,1] range, no ImageNet normalisation)
+VAE_TRANSFORM = transforms.Compose([
+    transforms.Resize((96, 64), interpolation=transforms.InterpolationMode.BICUBIC),
+    transforms.ConvertImageDtype(torch.float32),
 ])
 
 # Mapping backbone name → CLS-token feature dimension (for reference / assertions)
@@ -170,6 +186,17 @@ def _get_backbone(model: nn.Module) -> nn.Module:
     if hasattr(model, "backbone"):
         return model.backbone
     return model
+
+
+class _VAEEncoderWrapper(nn.Module):
+    """Wraps a VAE Encoder so that forward() returns only mu (B, D)."""
+    def __init__(self, encoder: nn.Module) -> None:
+        super().__init__()
+        self.encoder = encoder
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _z, mu, _log_var = self.encoder(x)
+        return mu
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +252,8 @@ def load_model(
     dora_r: int = 8,
     dora_alpha: float = 16.0,
     dora_dropout: float = 0.1,
+    vae_checkpoint: Optional[str] = None,
+    vae_latent_dim: int = 100,
 ) -> nn.Module:
     """
     Build and return a model ready for inference.
@@ -295,18 +324,34 @@ def load_model(
         if weights_path:
             _load_checkpoint(model, weights_path)
 
+    elif model_type == "custom_vae":
+        if not vae_checkpoint:
+            raise ValueError("--vae_checkpoint is required for model_type 'custom_vae'.")
+        ckpt_path = Path(vae_checkpoint)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"VAE checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        encoder_weights = {
+            k.split('.', 1)[1]: v
+            for k, v in ckpt["state_dict"].items()
+            if k.startswith("encoder.")
+        }
+        encoder = Encoder(vae_latent_dim)
+        encoder.load_state_dict(encoder_weights)
+        model = _VAEEncoderWrapper(encoder)
+        print(f"  ✓ Loaded VAE encoder from: {ckpt_path}")
+
     else:
         raise ValueError(
             f"Unknown model_type '{model_type}'. "
-            "Choose from: dino, dino_lora, dino_dora. "
-            "Both DINOv1 and DINOv2 backbones are supported."
+            "Choose from: dino, dino_lora, dino_dora, custom_vae."
         )
 
     model.to(device)
     model.eval()
     _freeze(model)
-    print(f"  ✓ Model ready  "
-          f"(feature dim ≈ {BACKBONE_DIM.get(backbone_name, '?')})")
+    feat_dim = vae_latent_dim if model_type == "custom_vae" else BACKBONE_DIM.get(backbone_name, '?')
+    print(f"  ✓ Model ready  (feature dim ≈ {feat_dim})")
     return model
 
 
@@ -390,6 +435,7 @@ def encode_metadata(
     batch_size: int,
     return_reg_tokens: bool = False,
     use_amp: bool = True,
+    transform: transforms.Compose = DINO_TRANSFORM,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -427,6 +473,7 @@ def encode_metadata(
             if treated_paths:
                 treated_feats = encode_paths(
                     treated_paths, root_dir, model, device, batch_size,
+                    transform=transform,
                     return_reg_tokens=return_reg_tokens, use_amp=use_amp,
                 )  # (N_treated, D)
                 plate_result["treated"] = treated_feats
@@ -438,6 +485,7 @@ def encode_metadata(
             if control_paths:
                 control_feats = encode_paths(
                     control_paths, root_dir, model, device, batch_size,
+                    transform=transform,
                     return_reg_tokens=return_reg_tokens, use_amp=use_amp,
                 )  # (N_control, D)
                 control_avg = control_feats.mean(dim=0)   # (D,)
@@ -469,7 +517,7 @@ def parse_args() -> argparse.Namespace:
     # ---- Model selection ----
     parser.add_argument(
         "--model_type", type=str, default="dino",
-        choices=["dino", "dino_lora", "dino_dora"],
+        choices=["dino", "dino_lora", "dino_dora", "custom_vae"],
         help="Which model to use for encoding. Default: dino",
     )
     parser.add_argument(
@@ -510,6 +558,17 @@ def parse_args() -> argparse.Namespace:
     dora_grp.add_argument("--dora_r",       type=int,   default=8,    help="DoRA rank. Default: 8")
     dora_grp.add_argument("--dora_alpha",   type=float, default=16.0, help="DoRA alpha. Default: 16.0")
     dora_grp.add_argument("--dora_dropout", type=float, default=0.1,  help="DoRA dropout. Default: 0.1")
+
+    # ---- Custom VAE hyper-parameters ----
+    vae_grp = parser.add_argument_group("VAE (used when --model_type custom_vae)")
+    vae_grp.add_argument(
+        "--vae_checkpoint", type=str, default=None,
+        help="Path to VAE checkpoint (.ckpt). Required for custom_vae.",
+    )
+    vae_grp.add_argument(
+        "--vae_latent_dim", type=int, default=100,
+        help="Latent dimension of the VAE encoder. Default: 100",
+    )
 
     # ---- Misc ----
     parser.add_argument(
@@ -587,16 +646,26 @@ def main() -> None:
         dora_r=args.dora_r,
         dora_alpha=args.dora_alpha,
         dora_dropout=args.dora_dropout,
+        vae_checkpoint=args.vae_checkpoint,
+        vae_latent_dim=args.vae_latent_dim,
     )
 
     # ------------------------------------------------------------------
     # Validate --return_reg_tokens usage
     # ------------------------------------------------------------------
-    if args.return_reg_tokens and not args.backbone.endswith("_reg"):
-        raise ValueError(
-            f"--return_reg_tokens requires a DINOv2 _reg backbone "
-            f"(e.g. dinov2_vitb14_reg), but got '{args.backbone}'."
-        )
+    if args.return_reg_tokens:
+        if args.model_type == "custom_vae":
+            raise ValueError("--return_reg_tokens is not supported with custom_vae.")
+        if not args.backbone.endswith("_reg"):
+            raise ValueError(
+                f"--return_reg_tokens requires a DINOv2 _reg backbone "
+                f"(e.g. dinov2_vitb14_reg), but got '{args.backbone}'."
+            )
+
+    # ------------------------------------------------------------------
+    # Select transform
+    # ------------------------------------------------------------------
+    transform = VAE_TRANSFORM if args.model_type == "custom_vae" else DINO_TRANSFORM
 
     # ------------------------------------------------------------------
     # Encode
@@ -609,6 +678,7 @@ def main() -> None:
         batch_size=args.batch_size,
         return_reg_tokens=args.return_reg_tokens,
         use_amp=not args.no_amp,
+        transform=transform,
     )
 
     # ------------------------------------------------------------------
@@ -617,9 +687,12 @@ def main() -> None:
     output_path = Path(args.output)
     suffix = output_path.suffix or ".pt"
     stem = output_path.stem
-    model_tag = f"{args.backbone}_{args.model_type}"
-    if args.return_reg_tokens:
-        model_tag += "_reg"
+    if args.model_type == "custom_vae":
+        model_tag = f"custom_vae_dim{args.vae_latent_dim}"
+    else:
+        model_tag = f"{args.backbone}_{args.model_type}"
+        if args.return_reg_tokens:
+            model_tag += "_reg"
     output_path = output_path.with_name(f"{stem}_{model_tag}{suffix}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(embeddings, output_path)
