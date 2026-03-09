@@ -115,8 +115,8 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from PIL import Image
 from torchvision import transforms
+from torchvision.io import decode_image, ImageReadMode
 from tqdm import tqdm
 
 # Make sure the project's src/ package is importable regardless of cwd
@@ -135,7 +135,7 @@ from src.models.dora import DoRAConfig
 # ---------------------------------------------------------------------------
 DINO_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224), interpolation=transforms.InterpolationMode.BICUBIC),
-    transforms.ToTensor(),
+    transforms.ConvertImageDtype(torch.float32),
     transforms.Normalize(mean=(0.485, 0.456, 0.406),
                          std=(0.229, 0.224, 0.225)),
 ])
@@ -354,7 +354,7 @@ def encode_paths(
         for rel_path in batch_paths:
             full_path = root_dir / rel_path
             try:
-                img = Image.open(full_path).convert("RGB")
+                img = decode_image(str(full_path), mode=ImageReadMode.RGB)
                 batch_tensors.append(transform(img))
             except Exception as exc:
                 raise RuntimeError(
