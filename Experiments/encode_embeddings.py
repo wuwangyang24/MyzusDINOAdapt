@@ -115,6 +115,7 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
 from tqdm import tqdm
@@ -311,6 +312,32 @@ def load_model(
 
 
 # ---------------------------------------------------------------------------
+# Dataset for multi-worker image loading
+# ---------------------------------------------------------------------------
+
+class _ImagePathDataset(Dataset):
+    """Lightweight dataset that loads images from a list of relative paths."""
+
+    def __init__(
+        self,
+        image_paths: List[str],
+        root_dir: Path,
+        transform: transforms.Compose,
+    ) -> None:
+        self.image_paths = image_paths
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        full_path = self.root_dir / self.image_paths[idx]
+        img = Image.open(full_path).convert("RGB")
+        return self.transform(img)
+
+
+# ---------------------------------------------------------------------------
 # Per-batch encoding
 # ---------------------------------------------------------------------------
 
@@ -323,6 +350,8 @@ def encode_paths(
     batch_size: int,
     transform: transforms.Compose = DINO_TRANSFORM,
     return_reg_tokens: bool = False,
+    num_workers: int = 4,
+    use_amp: bool = True,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
@@ -336,6 +365,8 @@ def encode_paths(
         transform:   Torchvision transform applied to each PIL image.
         return_reg_tokens: If True, also return register tokens via
                            DINOv2's ``forward_features`` method.
+        num_workers: Number of DataLoader workers for parallel image loading.
+        use_amp:     Use float16 automatic mixed precision (GPU only).
 
     Returns:
         If return_reg_tokens is False:
@@ -344,35 +375,36 @@ def encode_paths(
             Tensor of shape (N, D) on CPU  (register tokens averaged
             over the N_reg dimension per image).
     """
+    use_cuda = device.type == "cuda"
+    amp_enabled = use_amp and use_cuda
+
+    dataset = _ImagePathDataset(image_paths, root_dir, transform)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=use_cuda,
+        drop_last=False,
+    )
+
     all_features: List[torch.Tensor] = []
+    backbone = _get_backbone(model) if return_reg_tokens else None
 
-    for start in range(0, len(image_paths), batch_size):
-        batch_paths = image_paths[start: start + batch_size]
-        batch_tensors: List[torch.Tensor] = []
+    for batch in loader:
+        batch = batch.to(device, non_blocking=use_cuda)    # (B, 3, 224, 224)
 
-        for rel_path in batch_paths:
-            full_path = root_dir / rel_path
-            try:
-                img = Image.open(full_path).convert("RGB")
-                batch_tensors.append(transform(img))
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load image '{full_path}': {exc}"
-                ) from exc
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            if return_reg_tokens:
+                out = backbone.forward_features(batch)
+                reg_tok = out["x_norm_regtokens"]          # (B, N_reg, D)
+                features = reg_tok.mean(dim=1)              # (B, D)
+            else:
+                features = model(batch)                     # (B, D)
 
-        batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
+        all_features.append(features.float().cpu())
 
-        if return_reg_tokens:
-            backbone = _get_backbone(model)
-            out = backbone.forward_features(batch)
-            reg_tok = out["x_norm_regtokens"]             # (B, N_reg, D)
-            reg_tok_mean = reg_tok.mean(dim=1)             # (B, D)
-            all_features.append(reg_tok_mean.cpu())
-        else:
-            features = model(batch)                        # (B, D)
-            all_features.append(features.cpu())
-
-    return torch.cat(all_features, dim=0)                  # (N, D)
+    return torch.cat(all_features, dim=0)                   # (N, D)
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +418,8 @@ def encode_metadata(
     device: torch.device,
     batch_size: int,
     return_reg_tokens: bool = False,
+    num_workers: int = 4,
+    use_amp: bool = True,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -424,6 +458,7 @@ def encode_metadata(
                 treated_feats = encode_paths(
                     treated_paths, root_dir, model, device, batch_size,
                     return_reg_tokens=return_reg_tokens,
+                    num_workers=num_workers, use_amp=use_amp,
                 )  # (N_treated, D)
                 plate_result["treated"] = treated_feats
             else:
@@ -435,6 +470,7 @@ def encode_metadata(
                 control_feats = encode_paths(
                     control_paths, root_dir, model, device, batch_size,
                     return_reg_tokens=return_reg_tokens,
+                    num_workers=num_workers, use_amp=use_amp,
                 )  # (N_control, D)
                 control_avg = control_feats.mean(dim=0)   # (D,)
                 plate_result["control"] = control_avg
@@ -517,6 +553,18 @@ def parse_args() -> argparse.Namespace:
         help="Number of images per forward pass. Default: 64",
     )
     parser.add_argument(
+        "--num_workers", type=int, default=4,
+        help="Number of DataLoader workers for parallel image loading. Default: 4",
+    )
+    parser.add_argument(
+        "--no_amp", action="store_true", default=False,
+        help="Disable float16 automatic mixed precision (enabled by default on GPU).",
+    )
+    parser.add_argument(
+        "--compile", action="store_true", default=False,
+        help="Use torch.compile to optimize the model (requires PyTorch 2.0+).",
+    )
+    parser.add_argument(
         "--device", type=str, default=None,
         help="Torch device (e.g. 'cuda', 'cuda:1', 'cpu'). Auto-detected if not specified.",
     )
@@ -581,6 +629,11 @@ def main() -> None:
         dora_dropout=args.dora_dropout,
     )
 
+    # Optional torch.compile
+    if args.compile:
+        print("Compiling model with torch.compile ...")
+        model = torch.compile(model)
+
     # ------------------------------------------------------------------
     # Validate --return_reg_tokens usage
     # ------------------------------------------------------------------
@@ -600,6 +653,8 @@ def main() -> None:
         device=device,
         batch_size=args.batch_size,
         return_reg_tokens=args.return_reg_tokens,
+        num_workers=args.num_workers,
+        use_amp=not args.no_amp,
     )
 
     # ------------------------------------------------------------------
