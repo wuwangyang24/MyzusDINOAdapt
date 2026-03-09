@@ -323,6 +323,7 @@ def encode_paths(
     batch_size: int,
     transform: transforms.Compose = DINO_TRANSFORM,
     return_reg_tokens: bool = False,
+    use_amp: bool = True,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
@@ -362,15 +363,17 @@ def encode_paths(
 
         batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
 
-        if return_reg_tokens:
-            backbone = _get_backbone(model)
-            out = backbone.forward_features(batch)
-            reg_tok = out["x_norm_regtokens"]             # (B, N_reg, D)
-            reg_tok_mean = reg_tok.mean(dim=1)             # (B, D)
-            all_features.append(reg_tok_mean.cpu())
-        else:
-            features = model(batch)                        # (B, D)
-            all_features.append(features.cpu())
+        amp_enabled = use_amp and device.type == "cuda"
+        with torch.autocast(device_type=device.type, enabled=amp_enabled):
+            if return_reg_tokens:
+                backbone = _get_backbone(model)
+                out = backbone.forward_features(batch)
+                reg_tok = out["x_norm_regtokens"]             # (B, N_reg, D)
+                reg_tok_mean = reg_tok.mean(dim=1)             # (B, D)
+                all_features.append(reg_tok_mean.float().cpu())
+            else:
+                features = model(batch)                        # (B, D)
+                all_features.append(features.float().cpu())
 
     return torch.cat(all_features, dim=0)                  # (N, D)
 
@@ -386,6 +389,7 @@ def encode_metadata(
     device: torch.device,
     batch_size: int,
     return_reg_tokens: bool = False,
+    use_amp: bool = True,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -423,7 +427,7 @@ def encode_metadata(
             if treated_paths:
                 treated_feats = encode_paths(
                     treated_paths, root_dir, model, device, batch_size,
-                    return_reg_tokens=return_reg_tokens,
+                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
                 )  # (N_treated, D)
                 plate_result["treated"] = treated_feats
             else:
@@ -434,7 +438,7 @@ def encode_metadata(
             if control_paths:
                 control_feats = encode_paths(
                     control_paths, root_dir, model, device, batch_size,
-                    return_reg_tokens=return_reg_tokens,
+                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
                 )  # (N_control, D)
                 control_avg = control_feats.mean(dim=0)   # (D,)
                 plate_result["control"] = control_avg
@@ -515,6 +519,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size", type=int, default=64,
         help="Number of images per forward pass. Default: 64",
+    )
+    parser.add_argument(
+        "--no_amp", action="store_true", default=False,
+        help="Disable float16 automatic mixed precision (enabled by default on GPU).",
     )
     parser.add_argument(
         "--device", type=str, default=None,
@@ -600,6 +608,7 @@ def main() -> None:
         device=device,
         batch_size=args.batch_size,
         return_reg_tokens=args.return_reg_tokens,
+        use_amp=not args.no_amp,
     )
 
     # ------------------------------------------------------------------
