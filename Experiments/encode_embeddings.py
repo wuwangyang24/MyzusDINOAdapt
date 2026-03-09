@@ -33,6 +33,8 @@ Output .pt file structure (dict):
             <plate_id (str)>: {
                 "treated": torch.Tensor,   # shape (N, D) — one row per image
                 "control": torch.Tensor,   # shape (D,)   — averaged across all controls
+                # When --return_reg_tokens is used, features come from the mean
+                # of the register tokens instead of the CLS token.
             }
         }
     }
@@ -157,6 +159,17 @@ BACKBONE_DIM = {
     "dinov2_vitl14_reg": 1024,
     "dinov2_vitg14_reg": 1536,
 }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _get_backbone(model: nn.Module) -> nn.Module:
+    """Return the raw backbone, unwrapping LoRA/DoRA wrappers if present."""
+    if hasattr(model, "backbone"):
+        return model.backbone
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +322,7 @@ def encode_paths(
     device: torch.device,
     batch_size: int,
     transform: transforms.Compose = DINO_TRANSFORM,
+    return_reg_tokens: bool = False,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
@@ -320,9 +334,15 @@ def encode_paths(
         device:      Torch device.
         batch_size:  Number of images per forward pass.
         transform:   Torchvision transform applied to each PIL image.
+        return_reg_tokens: If True, also return register tokens via
+                           DINOv2's ``forward_features`` method.
 
     Returns:
-        Tensor of shape (N, D) on CPU.
+        If return_reg_tokens is False:
+            Tensor of shape (N, D) on CPU  (CLS token features).
+        If return_reg_tokens is True:
+            Tensor of shape (N, D) on CPU  (register tokens averaged
+            over the N_reg dimension per image).
     """
     all_features: List[torch.Tensor] = []
 
@@ -341,10 +361,18 @@ def encode_paths(
                 ) from exc
 
         batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
-        features = model(batch)                                  # (B, D)
-        all_features.append(features.cpu())
 
-    return torch.cat(all_features, dim=0)  # (N, D)
+        if return_reg_tokens:
+            backbone = _get_backbone(model)
+            out = backbone.forward_features(batch)
+            reg_tok = out["x_norm_regtokens"]             # (B, N_reg, D)
+            reg_tok_mean = reg_tok.mean(dim=1)             # (B, D)
+            all_features.append(reg_tok_mean.cpu())
+        else:
+            features = model(batch)                        # (B, D)
+            all_features.append(features.cpu())
+
+    return torch.cat(all_features, dim=0)                  # (N, D)
 
 
 # ---------------------------------------------------------------------------
@@ -357,12 +385,15 @@ def encode_metadata(
     model: nn.Module,
     device: torch.device,
     batch_size: int,
+    return_reg_tokens: bool = False,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
 
     Returns:
         Nested dict: compound_id → plate_id → {"treated": Tensor, "control": Tensor}
+        When *return_reg_tokens* is True the dict also contains
+        "treated_reg_tokens" and "control_reg_tokens".
     """
     COMPOUND_KEY = "Compound"
     result: Dict = {}
@@ -391,7 +422,8 @@ def encode_metadata(
             # ---- Treated: encode each image individually ----
             if treated_paths:
                 treated_feats = encode_paths(
-                    treated_paths, root_dir, model, device, batch_size
+                    treated_paths, root_dir, model, device, batch_size,
+                    return_reg_tokens=return_reg_tokens,
                 )  # (N_treated, D)
                 plate_result["treated"] = treated_feats
             else:
@@ -401,9 +433,10 @@ def encode_metadata(
             # ---- Control: encode then average ----
             if control_paths:
                 control_feats = encode_paths(
-                    control_paths, root_dir, model, device, batch_size
+                    control_paths, root_dir, model, device, batch_size,
+                    return_reg_tokens=return_reg_tokens,
                 )  # (N_control, D)
-                control_avg = control_feats.mean(dim=0)  # (D,)
+                control_avg = control_feats.mean(dim=0)   # (D,)
                 plate_result["control"] = control_avg
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
@@ -444,6 +477,11 @@ def parse_args() -> argparse.Namespace:
         "--weights_path", type=str, default=None,
         help="Path to a fine-tuned checkpoint (.pt/.pth). "
              "Used with dino_lora / dino_dora to load adapted weights.",
+    )
+    parser.add_argument(
+        "--return_reg_tokens", action="store_true", default=False,
+        help="Use mean register tokens instead of CLS token as features "
+             "(DINOv2 _reg backbones only).",
     )
 
     # ---- Hub source ----
@@ -544,6 +582,15 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------
+    # Validate --return_reg_tokens usage
+    # ------------------------------------------------------------------
+    if args.return_reg_tokens and not args.backbone.endswith("_reg"):
+        raise ValueError(
+            f"--return_reg_tokens requires a DINOv2 _reg backbone "
+            f"(e.g. dinov2_vitb14_reg), but got '{args.backbone}'."
+        )
+
+    # ------------------------------------------------------------------
     # Encode
     # ------------------------------------------------------------------
     embeddings = encode_metadata(
@@ -552,12 +599,19 @@ def main() -> None:
         model=model,
         device=device,
         batch_size=args.batch_size,
+        return_reg_tokens=args.return_reg_tokens,
     )
 
     # ------------------------------------------------------------------
-    # Save
+    # Save — inject model name into the output filename
     # ------------------------------------------------------------------
     output_path = Path(args.output)
+    suffix = output_path.suffix or ".pt"
+    stem = output_path.stem
+    model_tag = f"{args.backbone}_{args.model_type}"
+    if args.return_reg_tokens:
+        model_tag += "_reg"
+    output_path = output_path.with_name(f"{stem}_{model_tag}{suffix}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(embeddings, output_path)
     print(f"\nEmbeddings saved to: {output_path}")
