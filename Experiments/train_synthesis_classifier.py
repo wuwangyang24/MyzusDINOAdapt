@@ -585,14 +585,23 @@ def _run_xgboost(
     val_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
 
     print("\nClassification Report (validation set):")
-    print(classification_report(
+    report_str = classification_report(
         y_val, val_preds,
         labels=list(range(num_classes)),
         target_names=classes,
         zero_division=0,
-    ))
+    )
+    print(report_str)
     print(f"Val accuracy : {val_acc:.4f}")
     print(f"Val F1       : {val_f1:.4f}")
+
+    # ── Save classification report ───────────────────────────────────────────
+    report_path = output_dir / "classification_report.txt"
+    with open(report_path, "w") as f:
+        f.write(report_str)
+        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
+        f.write(f"Val F1       : {val_f1:.4f}\n")
+    print(f"Report saved to    : {report_path}")
 
     # ── Save model ───────────────────────────────────────────────────────────
     model_path = output_dir / "xgboost_model.json"
