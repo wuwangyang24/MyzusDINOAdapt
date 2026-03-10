@@ -587,6 +587,7 @@ def _run_xgboost(
     print("\nClassification Report (validation set):")
     print(classification_report(
         y_val, val_preds,
+        labels=list(range(num_classes)),
         target_names=classes,
         zero_division=0,
     ))
