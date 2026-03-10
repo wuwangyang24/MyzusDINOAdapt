@@ -88,7 +88,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import (
-    accuracy_score, f1_score, classification_report, confusion_matrix
+    balanced_accuracy_score, f1_score, classification_report, confusion_matrix
 )
 from tqdm import tqdm
 import matplotlib
@@ -418,7 +418,7 @@ def run_epoch(
     n = len(all_labels)
     return {
         "loss":     total_loss / n,
-        "accuracy": accuracy_score(all_labels, all_preds),
+        "accuracy": balanced_accuracy_score(all_labels, all_preds),
         "f1":       f1_score(all_labels, all_preds, average="weighted",
                              zero_division=0),
     }
@@ -678,7 +678,7 @@ def _run_xgboost(
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     val_preds = clf.predict(X_val)
-    val_acc = accuracy_score(y_val, val_preds)
+    val_acc = balanced_accuracy_score(y_val, val_preds)
     val_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
 
     print("\nClassification Report (validation set):")
