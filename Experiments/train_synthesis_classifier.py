@@ -534,6 +534,14 @@ def _run_xgboost(
               f"singleton class(es): {removed_names}")
         X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
 
+    # Remap labels to contiguous 0..K-1 (required by XGBoost)
+    remaining = sorted(set(y.tolist()))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    y = np.array([old2new[yi] for yi in y])
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
+
     # ── Train / val split ────────────────────────────────────────────────────
     X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
         X, y, cids,
