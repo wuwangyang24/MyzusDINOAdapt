@@ -523,6 +523,17 @@ def _run_xgboost(
             "match the compound IDs in the metadata."
         )
 
+    # ── Remove classes with fewer than 2 compounds ───────────────────────────
+    class_counts = np.bincount(y)
+    valid_classes = set(np.where(class_counts >= 2)[0])
+    keep_mask = np.array([yi in valid_classes for yi in y])
+    n_removed = len(y) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"singleton class(es): {removed_names}")
+        X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
+
     # ── Train / val split ────────────────────────────────────────────────────
     X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
         X, y, cids,
