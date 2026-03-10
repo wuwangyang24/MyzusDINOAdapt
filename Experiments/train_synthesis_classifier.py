@@ -462,6 +462,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_predictions", action="store_true",
                    help="Save validation predictions + ground truth to predictions.csv")
 
+    p.add_argument("--min_compounds_per_class", type=int, default=2,
+                   help="Drop synthesis programs with fewer compounds than this. Default: 2")
+
     # ---- Classifier selection ----
     p.add_argument("--classifier", choices=["transformer", "xgboost"],
                    default="transformer",
@@ -523,15 +526,16 @@ def _run_xgboost(
             "match the compound IDs in the metadata."
         )
 
-    # ── Remove classes with fewer than 2 compounds ───────────────────────────
+    # ── Remove classes with fewer than min_compounds_per_class compounds ──
+    min_cpc = max(args.min_compounds_per_class, 2)  # need ≥ 2 for train/val split
     class_counts = np.bincount(y)
-    valid_classes = set(np.where(class_counts >= 2)[0])
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
     keep_mask = np.array([yi in valid_classes for yi in y])
     n_removed = len(y) - keep_mask.sum()
     if n_removed > 0:
         removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
         print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
-              f"singleton class(es): {removed_names}")
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
         X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
 
     # Remap labels to contiguous 0..K-1 (required by XGBoost)
