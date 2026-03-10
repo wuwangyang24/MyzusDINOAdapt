@@ -596,15 +596,18 @@ def _run_xgboost(
     print(f"Val F1       : {val_f1:.4f}")
 
     # ── Save classification report ───────────────────────────────────────────
-    report_path = output_dir / "classification_report.txt"
+    emb_stem = Path(args.embeddings).stem          # e.g. "embeddings_tiltedvae_dim100"
+    report_path = output_dir / f"classification_report_{emb_stem}.txt"
     with open(report_path, "w") as f:
+        f.write(f"Embeddings : {args.embeddings}\n")
+        f.write(f"Subtract control : {args.subtract_control}\n\n")
         f.write(report_str)
         f.write(f"\nVal accuracy : {val_acc:.4f}\n")
         f.write(f"Val F1       : {val_f1:.4f}\n")
     print(f"Report saved to    : {report_path}")
 
     # ── Save model ───────────────────────────────────────────────────────────
-    model_path = output_dir / "xgboost_model.json"
+    model_path = output_dir / f"xgboost_model_{emb_stem}.json"
     clf.save_model(str(model_path))
     print(f"Model saved to     : {model_path}")
 
@@ -634,7 +637,7 @@ def _run_xgboost(
             f"train_{metric_key}": evals["validation_0"][metric_key],
             f"val_{metric_key}": evals["validation_1"][metric_key],
         })
-        log_df.to_csv(output_dir / "training_log.csv", index=False)
+        log_df.to_csv(output_dir / f"training_log_{emb_stem}.csv", index=False)
 
     print(f"Outputs saved to   : {output_dir}")
 
