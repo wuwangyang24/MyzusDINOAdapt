@@ -26,9 +26,13 @@ For each compound:
 
 Inputs
 ------
-  --embeddings   Experiments/embeddings.pt
+  --embeddings   Experiments/embeddings.pt   (optional if --efficacy is given)
                  Output of encode_embeddings.py:
                     { compound_id: { plate_id: {"treated": (N,D), "control": (D,)} } }
+
+  --efficacy     Experiments/efficacy.pt     (optional, alternative to --embeddings)
+                 List of dicts: [{"Compound": str, "Efficacy": float}, ...]
+                 Uses the efficacy value as a single scalar feature per compound.
 
   --metadata     CSV / Excel file with at least two columns:
                     "compound"           (str)  — must match compound_id keys in .pt file
@@ -57,6 +61,12 @@ Usage examples
       --classifier       xgboost \\
       --subtract_control \\
       --xgb_n_estimators 500 --xgb_max_depth 8
+
+  # XGBoost with efficacy values instead of embeddings
+  python Experiments/train_synthesis_classifier.py \\
+      --efficacy   Experiments/efficacy.pt \\
+      --metadata   data/compound_metadata.csv \\
+      --classifier xgboost
 
 Output
 ------
@@ -195,6 +205,74 @@ def collate_fn(
         torch.tensor(labels, dtype=torch.long),
         list(cids),
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1b. Efficacy-based Dataset & helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def load_efficacy_data(path: str) -> Dict[str, float]:
+    """
+    Load efficacy.pt → {compound_id: efficacy_value}.
+
+    Expected format: [{'Compound': '...', 'Efficacy': float}, ...]
+    """
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    return {str(entry['Compound']): float(entry['Efficacy']) for entry in data}
+
+
+class EfficacyDataset(Dataset):
+    """
+    One sample = one compound, using efficacy as the sole feature.
+
+    Returns (1, 1) tensor, int label, compound_id string.
+    """
+
+    def __init__(
+        self,
+        efficacy: Dict[str, float],
+        compound_col: pd.Series,
+        label_col: pd.Series,
+        label2idx: Dict[str, int],
+    ):
+        self.samples: List[Tuple[torch.Tensor, int, str]] = []
+        comp2label: Dict[str, int] = {}
+        for comp, prog in zip(compound_col, label_col):
+            comp2label[str(comp)] = label2idx[str(prog)]
+
+        for cid, eff_val in efficacy.items():
+            if cid not in comp2label:
+                continue
+            feat = torch.tensor([[eff_val]], dtype=torch.float32)  # (1, 1)
+            self.samples.append((feat, comp2label[cid], cid))
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        return self.samples[idx]
+
+
+def build_efficacy_features(
+    efficacy: Dict[str, float],
+    compound_col: pd.Series,
+    label_col: pd.Series,
+    label2idx: Dict[str, int],
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """Build an (N, 1) feature matrix from efficacy values."""
+    comp2label: Dict[str, int] = {}
+    for comp, prog in zip(compound_col, label_col):
+        comp2label[str(comp)] = label2idx[str(prog)]
+
+    X_rows, y_rows, cids = [], [], []
+    for cid, eff_val in efficacy.items():
+        if cid not in comp2label:
+            continue
+        X_rows.append([eff_val])
+        y_rows.append(comp2label[cid])
+        cids.append(cid)
+
+    return np.array(X_rows, dtype=np.float32), np.array(y_rows), cids
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -425,8 +503,11 @@ def parse_args() -> argparse.Namespace:
     )
 
     # ---- Data ----
-    p.add_argument("--embeddings", required=True,
+    p.add_argument("--embeddings", default=None,
                    help="Path to the .pt embeddings file from encode_embeddings.py")
+    p.add_argument("--efficacy", default=None,
+                   help="Path to efficacy.pt ([{'Compound': str, 'Efficacy': float}, ...]). "
+                        "Alternative to --embeddings; uses efficacy as single-scalar feature.")
     p.add_argument("--metadata", required=True,
                    help="CSV or Excel file with 'compound' and 'synthesis_program' columns")
     p.add_argument("--compound_col", default="compound",
@@ -496,14 +577,15 @@ def parse_args() -> argparse.Namespace:
 
 def _run_xgboost(
     args: argparse.Namespace,
-    embeddings: Dict,
+    embeddings: Optional[Dict],
     df: pd.DataFrame,
     str2idx: Dict[str, int],
     classes: List[str],
     num_classes: int,
     output_dir: Path,
+    efficacy: Optional[Dict[str, float]] = None,
 ) -> None:
-    """Train an XGBoost classifier on the per-compound mean latent."""
+    """Train an XGBoost classifier on per-compound features (mean latent or efficacy)."""
     if not _HAS_XGBOOST:
         raise ImportError(
             "xgboost is required for --classifier xgboost. "
@@ -512,20 +594,28 @@ def _run_xgboost(
 
     from sklearn.model_selection import train_test_split
 
-    # ── Build mean-latent feature matrix ─────────────────────────────────────
-    X, y, cids = build_mean_latent_features(
-        embeddings=embeddings,
-        compound_col=df[args.compound_col],
-        label_col=df[args.label_col],
-        label2idx=str2idx,
-        subtract_control=args.subtract_control,
-    )
-    print(f"  {X.shape[0]} compounds with valid treated embeddings.")
+    # ── Build feature matrix ─────────────────────────────────────────────────
+    if efficacy is not None:
+        X, y, cids = build_efficacy_features(
+            efficacy=efficacy,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+        )
+    else:
+        X, y, cids = build_mean_latent_features(
+            embeddings=embeddings,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+            subtract_control=args.subtract_control,
+        )
+    print(f"  {X.shape[0]} compounds with valid features.")
     print(f"  Feature dim (D) : {X.shape[1]}")
 
     if X.shape[0] == 0:
         raise RuntimeError(
-            "Dataset is empty. Check that compound IDs in the embeddings file "
+            "Dataset is empty. Check that compound IDs in the input file "
             "match the compound IDs in the metadata."
         )
 
@@ -603,10 +693,11 @@ def _run_xgboost(
     print(f"Val F1       : {val_f1:.4f}")
 
     # ── Save classification report ───────────────────────────────────────────
-    emb_stem = Path(args.embeddings).stem          # e.g. "embeddings_tiltedvae_dim100"
+    _input_path = args.efficacy if args.efficacy else args.embeddings
+    emb_stem = Path(_input_path).stem              # e.g. "embeddings_tiltedvae_dim100"
     report_path = output_dir / f"classification_report_{emb_stem}.txt"
     with open(report_path, "w") as f:
-        f.write(f"Embeddings : {args.embeddings}\n")
+        f.write(f"Input file       : {_input_path}\n")
         f.write(f"Subtract control : {args.subtract_control}\n\n")
         f.write(report_str)
         f.write(f"\nVal accuracy : {val_acc:.4f}\n")
@@ -700,10 +791,23 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Load embeddings ───────────────────────────────────────────────────────
-    print(f"Loading embeddings : {args.embeddings}")
-    embeddings: Dict = torch.load(args.embeddings, map_location="cpu", weights_only=False)
-    print(f"  {len(embeddings)} compounds found in embeddings file.")
+    # ── Validate inputs ──────────────────────────────────────────────────────
+    if not args.embeddings and not args.efficacy:
+        raise ValueError("Provide at least one of --embeddings or --efficacy.")
+    if args.embeddings and args.efficacy:
+        raise ValueError("Provide only one of --embeddings or --efficacy, not both.")
+
+    # ── Load input data ──────────────────────────────────────────────────────
+    efficacy: Optional[Dict[str, float]] = None
+    embeddings: Optional[Dict] = None
+    if args.efficacy:
+        print(f"Loading efficacy   : {args.efficacy}")
+        efficacy = load_efficacy_data(args.efficacy)
+        print(f"  {len(efficacy)} compounds found in efficacy file.")
+    else:
+        print(f"Loading embeddings : {args.embeddings}")
+        embeddings = torch.load(args.embeddings, map_location="cpu", weights_only=False)
+        print(f"  {len(embeddings)} compounds found in embeddings file.")
 
     # ── Load metadata ─────────────────────────────────────────────────────────
     print(f"Loading metadata   : {args.metadata}")
@@ -740,22 +844,31 @@ def main() -> None:
             classes=classes,
             num_classes=num_classes,
             output_dir=output_dir,
+            efficacy=efficacy,
         )
         return
 
     # ── Dataset ───────────────────────────────────────────────────────────────
-    full_dataset = CompoundSynthesisDataset(
-        embeddings=embeddings,
-        compound_col=df[args.compound_col],
-        label_col=df[args.label_col],
-        label2idx=str2idx,
-        subtract_control=args.subtract_control,
-    )
-    print(f"  {len(full_dataset)} compounds with valid treated embeddings.")
+    if efficacy is not None:
+        full_dataset = EfficacyDataset(
+            efficacy=efficacy,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+        )
+    else:
+        full_dataset = CompoundSynthesisDataset(
+            embeddings=embeddings,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+            subtract_control=args.subtract_control,
+        )
+    print(f"  {len(full_dataset)} compounds with valid features.")
 
     if len(full_dataset) == 0:
         raise RuntimeError(
-            "Dataset is empty. Check that compound IDs in the embeddings file "
+            "Dataset is empty. Check that compound IDs in the input file "
             "match the compound IDs in the metadata."
         )
 
