@@ -1,17 +1,28 @@
 """
 train_synthesis_classifier.py
 
-Train a Transformer-based classifier to predict the synthesis program of a
-compound from its DINO embeddings.
+Train a classifier to predict the synthesis program of a compound from its
+DINO embeddings.  Two classifiers are available:
 
-DATA FLOW
----------
+  1. **Transformer** (default) — CLS-token set encoder over all treated latents
+  2. **XGBoost** — gradient-boosted trees on the mean latent per compound
+
+DATA FLOW  (Transformer)
+-------------------------
 For each compound:
   1. Collect all treated latent vectors across every plate  →  (M, D)
      (optionally subtract the per-plate averaged control embedding first)
   2. Prepend a learnable [CLS] token                        →  (M+1, D)
   3. Pass through a Transformer Encoder                     →  (M+1, D)
   4. Take [CLS] output                                      →  (D,) → FC → num_classes
+
+DATA FLOW  (XGBoost)
+---------------------
+For each compound:
+  1. Collect all treated latent vectors across every plate   →  (M, D)
+     (optionally subtract the per-plate averaged control embedding first)
+  2. Compute the element-wise mean across M images           →  (D,)
+  3. Feed the (N, D) feature matrix into XGBoost             →  num_classes
 
 Inputs
 ------
@@ -25,26 +36,34 @@ Inputs
 
 Usage examples
 --------------
-  # basic
-  python Experiments/train_synthesis_classifier.py \
-      --embeddings Experiments/embeddings.pt \
-      --metadata   data/compound_metadata.csv \
+  # basic (Transformer)
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings Experiments/embeddings.pt \\
+      --metadata   data/compound_metadata.csv \\
       --output_dir Experiments/runs/classifier
 
   # with control subtraction, custom transformer hyper-parameters
-  python Experiments/train_synthesis_classifier.py \
-      --embeddings       Experiments/embeddings.pt \
-      --metadata         data/compound_metadata.csv \
-      --subtract_control \
-      --d_model 256 --nhead 8 --num_layers 4 \
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --subtract_control \\
+      --d_model 256 --nhead 8 --num_layers 4 \\
       --epochs 100 --lr 3e-4 --batch_size 16
+
+  # XGBoost on mean latents with control subtraction
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       xgboost \\
+      --subtract_control \\
+      --xgb_n_estimators 500 --xgb_max_depth 8
 
 Output
 ------
   <output_dir>/
-      best_model.pt       — state-dict of the best validation-accuracy model
-      label_encoder.json  — { "classes": [...], "str2idx": {...} }
-      training_log.csv    — per-epoch train/val metrics
+      best_model.pt | xgboost_model.json  — saved model
+      label_encoder.json                   — { "classes": [...], "str2idx": {...} }
+      training_log.csv                     — per-epoch train/val metrics
 """
 
 import argparse
@@ -62,6 +81,12 @@ from sklearn.metrics import (
     accuracy_score, f1_score, classification_report
 )
 from tqdm import tqdm
+
+try:
+    import xgboost as xgb
+    _HAS_XGBOOST = True
+except ImportError:
+    _HAS_XGBOOST = False
 
 # ── project imports ──────────────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -322,6 +347,60 @@ def run_epoch(
 # 4.  Label encoding helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3b. Mean-latent feature builder (for XGBoost)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_mean_latent_features(
+    embeddings: Dict,
+    compound_col: pd.Series,
+    label_col: pd.Series,
+    label2idx: Dict[str, int],
+    subtract_control: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+    """
+    Build a (num_compounds, D) feature matrix where each row is the mean
+    of all treated latents for a compound (optionally control-subtracted).
+
+    Returns
+    -------
+    X         : (N, D) float32 array
+    y         : (N,) int array
+    cids      : list of compound ID strings
+    """
+    comp2label: Dict[str, int] = {}
+    for comp, prog in zip(compound_col, label_col):
+        comp2label[str(comp)] = label2idx[str(prog)]
+
+    X_rows, y_rows, cids = [], [], []
+
+    for compound_id, plates in embeddings.items():
+        cid = str(compound_id)
+        if cid not in comp2label:
+            continue
+
+        plate_latents: List[torch.Tensor] = []
+        for plate_data in plates.values():
+            treated = plate_data.get("treated")
+            if treated is None or treated.numel() == 0:
+                continue
+            if subtract_control and "control" in plate_data:
+                control = plate_data["control"]
+                treated = treated - control.unsqueeze(0)
+            plate_latents.append(treated.float())
+
+        if not plate_latents:
+            continue
+
+        all_latents = torch.cat(plate_latents, dim=0)       # (M, D)
+        mean_latent = all_latents.mean(dim=0).numpy()       # (D,)
+        X_rows.append(mean_latent)
+        y_rows.append(comp2label[cid])
+        cids.append(cid)
+
+    return np.stack(X_rows), np.array(y_rows), cids
+
+
 def build_label_encoder(series: pd.Series) -> Tuple[Dict[str, int], List[str]]:
     classes = sorted(series.astype(str).unique().tolist())
     str2idx = {c: i for i, c in enumerate(classes)}
@@ -383,11 +462,156 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_predictions", action="store_true",
                    help="Save validation predictions + ground truth to predictions.csv")
 
+    # ---- Classifier selection ----
+    p.add_argument("--classifier", choices=["transformer", "xgboost"],
+                   default="transformer",
+                   help="Which classifier to use. Default: transformer")
+
+    # ---- XGBoost hyper-parameters ----
+    p.add_argument("--xgb_n_estimators", type=int, default=300,
+                   help="[XGBoost] Number of boosting rounds. Default: 300")
+    p.add_argument("--xgb_max_depth", type=int, default=6,
+                   help="[XGBoost] Max tree depth. Default: 6")
+    p.add_argument("--xgb_learning_rate", type=float, default=0.1,
+                   help="[XGBoost] Boosting learning rate. Default: 0.1")
+    p.add_argument("--xgb_subsample", type=float, default=0.8,
+                   help="[XGBoost] Row subsampling ratio. Default: 0.8")
+    p.add_argument("--xgb_colsample_bytree", type=float, default=0.8,
+                   help="[XGBoost] Column subsampling ratio. Default: 0.8")
+    p.add_argument("--xgb_early_stopping", type=int, default=20,
+                   help="[XGBoost] Early stopping rounds. Default: 20")
+
     return p.parse_args()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 6.  Main
+# 6.  XGBoost training pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _run_xgboost(
+    args: argparse.Namespace,
+    embeddings: Dict,
+    df: pd.DataFrame,
+    str2idx: Dict[str, int],
+    classes: List[str],
+    num_classes: int,
+    output_dir: Path,
+) -> None:
+    """Train an XGBoost classifier on the per-compound mean latent."""
+    if not _HAS_XGBOOST:
+        raise ImportError(
+            "xgboost is required for --classifier xgboost. "
+            "Install it with:  pip install xgboost"
+        )
+
+    from sklearn.model_selection import train_test_split
+
+    # ── Build mean-latent feature matrix ─────────────────────────────────────
+    X, y, cids = build_mean_latent_features(
+        embeddings=embeddings,
+        compound_col=df[args.compound_col],
+        label_col=df[args.label_col],
+        label2idx=str2idx,
+        subtract_control=args.subtract_control,
+    )
+    print(f"  {X.shape[0]} compounds with valid treated embeddings.")
+    print(f"  Feature dim (D) : {X.shape[1]}")
+
+    if X.shape[0] == 0:
+        raise RuntimeError(
+            "Dataset is empty. Check that compound IDs in the embeddings file "
+            "match the compound IDs in the metadata."
+        )
+
+    # ── Train / val split ────────────────────────────────────────────────────
+    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+        X, y, cids,
+        test_size=args.val_split,
+        random_state=args.seed,
+        stratify=y if len(np.unique(y)) > 1 else None,
+    )
+    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
+
+    # ── XGBoost model ────────────────────────────────────────────────────────
+    objective = "multi:softprob" if num_classes > 2 else "binary:logistic"
+    xgb_params = dict(
+        n_estimators=args.xgb_n_estimators,
+        max_depth=args.xgb_max_depth,
+        learning_rate=args.xgb_learning_rate,
+        subsample=args.xgb_subsample,
+        colsample_bytree=args.xgb_colsample_bytree,
+        objective=objective,
+        eval_metric="mlogloss" if num_classes > 2 else "logloss",
+        use_label_encoder=False,
+        random_state=args.seed,
+        n_jobs=-1,
+        early_stopping_rounds=args.xgb_early_stopping,
+    )
+    if num_classes > 2:
+        xgb_params["num_class"] = num_classes
+
+    clf = xgb.XGBClassifier(**xgb_params)
+
+    print(f"\nTraining XGBoost ({args.xgb_n_estimators} rounds, "
+          f"max_depth={args.xgb_max_depth}, lr={args.xgb_learning_rate}) ...")
+    clf.fit(
+        X_train, y_train,
+        eval_set=[(X_train, y_train), (X_val, y_val)],
+        verbose=True,
+    )
+
+    # ── Evaluation ───────────────────────────────────────────────────────────
+    val_preds = clf.predict(X_val)
+    val_acc = accuracy_score(y_val, val_preds)
+    val_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
+
+    print("\nClassification Report (validation set):")
+    print(classification_report(
+        y_val, val_preds,
+        target_names=classes,
+        zero_division=0,
+    ))
+    print(f"Val accuracy : {val_acc:.4f}")
+    print(f"Val F1       : {val_f1:.4f}")
+
+    # ── Save model ───────────────────────────────────────────────────────────
+    model_path = output_dir / "xgboost_model.json"
+    clf.save_model(str(model_path))
+    print(f"Model saved to     : {model_path}")
+
+    # ── Save predictions ─────────────────────────────────────────────────────
+    if args.save_predictions:
+        val_probs = clf.predict_proba(X_val)  # (N, num_classes)
+        pred_rows = {
+            "compound_id":     cids_val,
+            "true_label":      [classes[i] for i in y_val],
+            "predicted_label": [classes[i] for i in val_preds],
+            "correct":         [t == p for t, p in zip(y_val, val_preds)],
+        }
+        for cls_idx, cls_name in enumerate(classes):
+            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
+
+        pred_df = pd.DataFrame(pred_rows)
+        pred_path = output_dir / "predictions.csv"
+        pred_df.to_csv(pred_path, index=False)
+        print(f"Predictions saved to: {pred_path}")
+
+    # ── Training log (evals_result) ──────────────────────────────────────────
+    evals = clf.evals_result()
+    if evals:
+        metric_key = "mlogloss" if num_classes > 2 else "logloss"
+        log_df = pd.DataFrame({
+            "epoch": list(range(1, len(evals["validation_0"][metric_key]) + 1)),
+            f"train_{metric_key}": evals["validation_0"][metric_key],
+            f"val_{metric_key}": evals["validation_1"][metric_key],
+        })
+        log_df.to_csv(output_dir / "training_log.csv", index=False)
+
+    print(f"Outputs saved to   : {output_dir}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7.  Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main() -> None:
@@ -437,6 +661,19 @@ def main() -> None:
     num_classes = len(classes)
     print(f"  {num_classes} synthesis programs: {classes}")
     save_label_encoder(classes, str2idx, output_dir / "label_encoder.json")
+
+    # ── Route to XGBoost or Transformer ──────────────────────────────────────
+    if args.classifier == "xgboost":
+        _run_xgboost(
+            args=args,
+            embeddings=embeddings,
+            df=df,
+            str2idx=str2idx,
+            classes=classes,
+            num_classes=num_classes,
+            output_dir=output_dir,
+        )
+        return
 
     # ── Dataset ───────────────────────────────────────────────────────────────
     full_dataset = CompoundSynthesisDataset(
