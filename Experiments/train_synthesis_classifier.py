@@ -78,9 +78,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import (
-    accuracy_score, f1_score, classification_report
+    accuracy_score, f1_score, classification_report, confusion_matrix
 )
 from tqdm import tqdm
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 try:
     import xgboost as xgb
@@ -609,6 +612,35 @@ def _run_xgboost(
         f.write(f"\nVal accuracy : {val_acc:.4f}\n")
         f.write(f"Val F1       : {val_f1:.4f}\n")
     print(f"Report saved to    : {report_path}")
+
+    # ── Confusion matrix ─────────────────────────────────────────────────────
+    cm = confusion_matrix(y_val, val_preds, labels=list(range(num_classes)))
+    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(
+        xticks=range(num_classes),
+        yticks=range(num_classes),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title=f"Confusion Matrix — {emb_stem}",
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    # Annotate cells
+    thresh = cm.max() / 2.0
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax.text(j, i, str(cm[i, j]),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black",
+                    fontsize=7)
+    fig.tight_layout()
+    cm_path = output_dir / f"confusion_matrix_{emb_stem}.png"
+    fig.savefig(cm_path, dpi=150)
+    plt.close(fig)
+    print(f"Confusion matrix   : {cm_path}")
 
     # ── Save model ───────────────────────────────────────────────────────────
     model_path = output_dir / f"xgboost_model_{emb_stem}.json"
