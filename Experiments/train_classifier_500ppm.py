@@ -46,6 +46,7 @@ from sklearn.metrics import (
     roc_auc_score,
     RocCurveDisplay,
 )
+from sklearn.model_selection import StratifiedKFold
 import matplotlib
 
 matplotlib.use("Agg")
@@ -248,7 +249,42 @@ def main() -> None:
     if X_train.shape[0] == 0:
         raise RuntimeError("No compounds matched between embeddings and efficacy.")
 
-    # ── Train XGBoost (no logging) ───────────────────────────────────────────
+    # ── 5-Fold Cross Validation ──────────────────────────────────────────────
+    print("\n5-Fold Cross Validation on training data ...")
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    fold_accs, fold_f1s, fold_aurocs = [], [], []
+
+    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
+        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+
+        fold_clf = xgb.XGBClassifier(
+            n_estimators=args.xgb_n_estimators,
+            max_depth=args.xgb_max_depth,
+            learning_rate=args.xgb_learning_rate,
+            subsample=args.xgb_subsample,
+            colsample_bytree=args.xgb_colsample_bytree,
+            objective="binary:logistic",
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=args.seed,
+            n_jobs=-1,
+            early_stopping_rounds=args.xgb_early_stopping,
+        )
+        fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+
+        va_preds = fold_clf.predict(X_va)
+        va_proba = fold_clf.predict_proba(X_va)[:, 1]
+        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
+        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
+        fold_aurocs.append(roc_auc_score(y_va, va_proba))
+        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
+
+    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
+          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
+          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
+
+    # ── Train final model on all training data ───────────────────────────────
     metric = "logloss"
     clf = xgb.XGBClassifier(
         n_estimators=args.xgb_n_estimators,
@@ -263,7 +299,7 @@ def main() -> None:
         n_jobs=-1,
         early_stopping_rounds=args.xgb_early_stopping,
     )
-    print(f"\nTraining XGBoost classifier ({args.xgb_n_estimators} rounds) ...")
+    print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
     clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=True)
     print("Training done.\n")
 
