@@ -22,7 +22,6 @@ Usage
 Output
 ------
   <output_dir>/
-      label_encoder.json
       classification_report.txt
       confusion_matrix.png
       auroc_curve.png
@@ -30,7 +29,6 @@ Output
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -235,10 +233,6 @@ def main() -> None:
     n_active = sum(v == 1 for v in cid2label.values())
     n_inactive = sum(v == 0 for v in cid2label.values())
     print(f"  Threshold: {args.threshold}  →  {n_active} active, {n_inactive} inactive")
-
-    # Save label encoder
-    with open(output_dir / "label_encoder.json", "w") as f:
-        json.dump({"classes": CLASS_NAMES, "threshold": args.threshold}, f, indent=2)
 
     # ── Build training features ──────────────────────────────────────────────
     X_train, y_train, _ = build_mean_latent_features(
