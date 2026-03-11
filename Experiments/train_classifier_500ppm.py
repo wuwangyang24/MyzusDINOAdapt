@@ -64,6 +64,8 @@ from sklearn.metrics import (
     f1_score,
     classification_report,
     confusion_matrix,
+    roc_auc_score,
+    RocCurveDisplay,
 )
 from sklearn.model_selection import train_test_split
 import matplotlib
@@ -316,6 +318,10 @@ def main() -> None:
 
     # Confusion matrix
     cm = confusion_matrix(y_val, val_preds, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    print("\nConfusion Matrix:")
+    print(f"  TN={tn}  FP={fp}")
+    print(f"  FN={fn}  TP={tp}")
     fig, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
     ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
@@ -334,18 +340,19 @@ def main() -> None:
     fig.savefig(output_dir / "confusion_matrix.png", dpi=150)
     plt.close(fig)
 
-    # Save model
-    clf.save_model(str(output_dir / "xgboost_model.json"))
-
-    # Training log
-    evals = clf.evals_result()
-    if evals:
-        log_df = pd.DataFrame({
-            "epoch": list(range(1, len(evals["validation_0"][metric]) + 1)),
-            f"train_{metric}": evals["validation_0"][metric],
-            f"val_{metric}": evals["validation_1"][metric],
-        })
-        log_df.to_csv(output_dir / "training_log.csv", index=False)
+    # AUROC curve
+    val_proba = clf.predict_proba(X_val)[:, 1]
+    auroc = roc_auc_score(y_val, val_proba)
+    print(f"Val AUROC    : {auroc:.4f}")
+    fig_roc, ax_roc = plt.subplots(figsize=(6, 5))
+    RocCurveDisplay.from_predictions(
+        y_val, val_proba, name="XGBoost", ax=ax_roc,
+    )
+    ax_roc.set_title(f"ROC Curve (AUROC = {auroc:.4f})")
+    ax_roc.plot([0, 1], [0, 1], "k--", alpha=0.5)
+    fig_roc.tight_layout()
+    fig_roc.savefig(output_dir / "auroc_curve.png", dpi=150)
+    plt.close(fig_roc)
 
     # Save predictions
     if args.save_predictions:
@@ -353,6 +360,7 @@ def main() -> None:
             "compound_id": cids_val,
             "true_label": [CLASS_NAMES[i] for i in y_val],
             "predicted_label": [CLASS_NAMES[i] for i in val_preds],
+            "probability_active": val_proba,
             "correct": [int(t == p) for t, p in zip(y_val, val_preds)],
         })
         pred_df.to_csv(output_dir / "predictions.csv", index=False)
