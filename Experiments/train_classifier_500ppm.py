@@ -17,7 +17,7 @@ Usage
       --embeddings           Experiments/embeddings_20ppm.pt \\
       --efficacy             Experiments/efficacy.pt \\
       --inference_embeddings Experiments/embeddings_100ppm.pt \\
-      --inference_efficacy   Experiments/efficacy_500ppm.pt
+      --inference_efficacy   Experiments/efficacy_500ppm.csv
 
 Output
 ------
@@ -171,8 +171,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--inference_efficacy",
-        default="Experiments/efficacy_500ppm.pt",
-        help="Ground-truth efficacy for inference evaluation (default: Experiments/efficacy_500ppm.pt)",
+        default="Experiments/efficacy_500ppm.csv",
+        help="Ground-truth efficacy for inference evaluation CSV with 'Compound No' and 'Active' columns (default: Experiments/efficacy_500ppm.csv)",
     )
 
     # ── Threshold ──
@@ -305,10 +305,12 @@ def main() -> None:
     print(f"  {len(inf_embeddings)} compounds in inference embeddings.")
 
     print(f"Loading inference efficacy   : {args.inference_efficacy}")
-    inf_efficacy = load_efficacy(args.inference_efficacy)
-    print(f"  {len(inf_efficacy)} compounds in inference efficacy file.")
-
-    inf_cid2label = binarize_efficacy(inf_efficacy, threshold=args.threshold)
+    inf_efficacy_df = pd.read_csv(args.inference_efficacy)
+    inf_cid2label = {
+        str(row["Compound No"]): int(row["Active"])
+        for _, row in inf_efficacy_df.iterrows()
+    }
+    print(f"  {len(inf_cid2label)} compounds in inference efficacy file.")
 
     X_inf, y_inf, cids_inf = build_mean_latent_features(
         inf_embeddings, inf_cid2label, args.subtract_control,
