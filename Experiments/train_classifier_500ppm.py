@@ -44,7 +44,8 @@ from sklearn.metrics import (
     roc_auc_score,
     RocCurveDisplay,
 )
-from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.model_selection import ParameterSampler, StratifiedKFold, cross_val_score
+from tqdm import tqdm
 import matplotlib
 
 matplotlib.use("Agg")
@@ -295,26 +296,25 @@ def main() -> None:
             "reg_alpha": [0, 0.1, 1.0],
             "reg_lambda": [0.5, 1.0, 5.0],
         }
-        search_clf = xgb.XGBClassifier(
-            objective="binary:logistic",
-            eval_metric="logloss",
-            use_label_encoder=False,
-            random_state=args.seed,
-            n_jobs=-1,
-        )
-        search = RandomizedSearchCV(
-            search_clf,
-            param_distributions,
-            n_iter=args.tune_iter,
-            scoring="roc_auc",
-            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed),
-            random_state=args.seed,
-            n_jobs=-1,
-            verbose=1,
-        )
-        search.fit(X_train, y_train)
-        xgb_params = {k: v for k, v in search.best_params_.items()}
-        print(f"  Best AUROC: {search.best_score_:.4f}")
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+        param_list = list(ParameterSampler(param_distributions, n_iter=args.tune_iter, random_state=args.seed))
+        best_score, best_params = -1, None
+        for params in tqdm(param_list, desc="Tuning XGBoost"):
+            tmp_clf = xgb.XGBClassifier(
+                **params,
+                objective="binary:logistic",
+                eval_metric="logloss",
+                use_label_encoder=False,
+                random_state=args.seed,
+                n_jobs=-1,
+            )
+            scores = cross_val_score(tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+            mean_score = scores.mean()
+            if mean_score > best_score:
+                best_score = mean_score
+                best_params = params
+        xgb_params = dict(best_params)
+        print(f"  Best AUROC: {best_score:.4f}")
         print(f"  Best params: {xgb_params}")
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────────
