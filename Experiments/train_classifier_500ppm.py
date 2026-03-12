@@ -44,7 +44,7 @@ from sklearn.metrics import (
     roc_auc_score,
     RocCurveDisplay,
 )
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 import matplotlib
 
 matplotlib.use("Agg")
@@ -167,6 +167,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Undersample majority class to balance the training set",
     )
+    p.add_argument(
+        "--tune",
+        action="store_true",
+        help="Run randomized hyperparameter search before training",
+    )
+    p.add_argument("--tune_iter", type=int, default=50, help="Number of random search iterations (default: 50)")
 
     # ── Inference data ──
     p.add_argument(
@@ -266,6 +272,51 @@ def main() -> None:
         y_train = y_train[balanced_idx]
         print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
 
+    # ── XGBoost parameters (defaults or from CLI) ────────────────────────────
+    xgb_params = dict(
+        n_estimators=args.xgb_n_estimators,
+        max_depth=args.xgb_max_depth,
+        learning_rate=args.xgb_learning_rate,
+        subsample=args.xgb_subsample,
+        colsample_bytree=args.xgb_colsample_bytree,
+    )
+
+    # ── Optional hyperparameter tuning ───────────────────────────────────────
+    if args.tune:
+        print(f"\nHyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
+        param_distributions = {
+            "n_estimators": [500, 1000, 2000],
+            "max_depth": [6, 8, 10],
+            "learning_rate": [0.01, 0.05, 0.1],
+            "subsample": [0.7, 0.8, 1.0],
+            "colsample_bytree": [0.7, 0.8, 1.0],
+            "min_child_weight": [1, 3, 5],
+            "gamma": [0, 0.3, 1.0],
+            "reg_alpha": [0, 0.1, 1.0],
+            "reg_lambda": [0.5, 1.0, 5.0],
+        }
+        search_clf = xgb.XGBClassifier(
+            objective="binary:logistic",
+            eval_metric="logloss",
+            use_label_encoder=False,
+            random_state=args.seed,
+            n_jobs=-1,
+        )
+        search = RandomizedSearchCV(
+            search_clf,
+            param_distributions,
+            n_iter=args.tune_iter,
+            scoring="roc_auc",
+            cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed),
+            random_state=args.seed,
+            n_jobs=-1,
+            verbose=1,
+        )
+        search.fit(X_train, y_train)
+        xgb_params = {k: v for k, v in search.best_params_.items()}
+        print(f"  Best AUROC: {search.best_score_:.4f}")
+        print(f"  Best params: {xgb_params}")
+
     # ── 5-Fold Cross Validation ──────────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
@@ -276,11 +327,7 @@ def main() -> None:
         y_tr, y_va = y_train[tr_idx], y_train[va_idx]
 
         fold_clf = xgb.XGBClassifier(
-            n_estimators=args.xgb_n_estimators,
-            max_depth=args.xgb_max_depth,
-            learning_rate=args.xgb_learning_rate,
-            subsample=args.xgb_subsample,
-            colsample_bytree=args.xgb_colsample_bytree,
+            **xgb_params,
             objective="binary:logistic",
             eval_metric="logloss",
             use_label_encoder=False,
@@ -302,15 +349,10 @@ def main() -> None:
           f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
     # ── Train final model on all training data ───────────────────────────────
-    metric = "logloss"
     clf = xgb.XGBClassifier(
-        n_estimators=args.xgb_n_estimators,
-        max_depth=args.xgb_max_depth,
-        learning_rate=args.xgb_learning_rate,
-        subsample=args.xgb_subsample,
-        colsample_bytree=args.xgb_colsample_bytree,
+        **xgb_params,
         objective="binary:logistic",
-        eval_metric=metric,
+        eval_metric="logloss",
         use_label_encoder=False,
         random_state=args.seed,
         n_jobs=-1,
