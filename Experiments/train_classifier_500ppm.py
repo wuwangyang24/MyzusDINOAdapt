@@ -30,8 +30,11 @@ Output
 
 import argparse
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
