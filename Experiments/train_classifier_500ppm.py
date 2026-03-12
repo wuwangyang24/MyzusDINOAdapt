@@ -290,13 +290,13 @@ def main() -> None:
         print(f"\nHyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
         param_distributions = {
             "n_estimators": [500, 1000, 2000],
-            "max_depth": [6, 8, 10],
+            "max_depth": [5, 10, 20],
             "learning_rate": [0.01, 0.05, 0.1],
             "subsample": [0.7, 0.8, 1.0],
             "colsample_bytree": [0.7, 0.8, 1.0],
-            "min_child_weight": [1, 3, 5],
-            "gamma": [0, 0.3, 1.0],
-            "reg_alpha": [0, 0.1, 1.0],
+            "min_child_weight": [1, 3, 5, 7],
+            "gamma": [0, 0.3, 0.6, 1.0],
+            "reg_alpha": [0, 0.1, 0.5, 1.0],
             "reg_lambda": [0.5, 1.0, 5.0],
         }
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
