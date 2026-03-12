@@ -394,8 +394,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--xgb_early_stopping", type=int, default=20, help="XGBoost early stopping (default: 20)")
 
     # ── ABMIL hyper-parameters ──
-    p.add_argument("--abmil_hidden", type=int, default=128, help="ABMIL attention hidden dim (default: 128)")
-    p.add_argument("--abmil_dropout", type=float, default=0.25, help="ABMIL dropout (default: 0.25)")
+    p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 128)")
+    p.add_argument("--abmil_dropout", type=float, default=0.1, help="ABMIL dropout (default: 0.25)")
     p.add_argument("--abmil_lr", type=float, default=1e-3, help="ABMIL learning rate (default: 1e-3)")
     p.add_argument("--abmil_wd", type=float, default=1e-4, help="ABMIL weight decay (default: 1e-4)")
     p.add_argument("--abmil_epochs", type=int, default=200, help="ABMIL training epochs (default: 200)")
