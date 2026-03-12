@@ -208,6 +208,15 @@ def train_abmil(
     input_dim = bags[0].shape[1]
     all_labels = np.array(labels)
 
+    # ── Compute pos_weight for class balancing ───────────────────────────
+    pos_weight = None
+    if args.balance:
+        n_pos = int(all_labels.sum())
+        n_neg = len(all_labels) - n_pos
+        if n_pos > 0:
+            pos_weight = torch.tensor([n_neg / n_pos], device=device)
+            print(f"  ABMIL pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
+
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation (ABMIL) on training data ...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
@@ -217,7 +226,7 @@ def train_abmil(
         torch.manual_seed(args.seed + fold_idx)
         fold_model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
         optimizer = torch.optim.Adam(fold_model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
         tr_bags = [bags[i] for i in tr_idx]
         tr_labels = [labels[i] for i in tr_idx]
@@ -261,7 +270,7 @@ def train_abmil(
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     for epoch in range(args.abmil_epochs):
         model.train()
