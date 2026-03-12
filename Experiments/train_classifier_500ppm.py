@@ -204,7 +204,7 @@ def train_abmil(
     args: argparse.Namespace,
     device: torch.device,
 ) -> GatedABMIL:
-    """Train Gated ABMIL with 5-fold CV reporting, return model trained on all data."""
+    """Train Gated ABMIL, return model trained on all data."""
     input_dim = bags[0].shape[1]
     all_labels = np.array(labels)
 
@@ -217,56 +217,8 @@ def train_abmil(
             pos_weight = torch.tensor([n_neg / n_pos], device=device)
             print(f"  ABMIL pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
 
-    # ── 5-Fold Cross Validation ──────────────────────────────────────────
-    print("\n5-Fold Cross Validation (ABMIL) on training data ...")
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
-    fold_accs, fold_f1s, fold_aurocs = [], [], []
-
-    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(bags, all_labels), 1):
-        torch.manual_seed(args.seed + fold_idx)
-        fold_model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
-        optimizer = torch.optim.Adam(fold_model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-        tr_bags = [bags[i] for i in tr_idx]
-        tr_labels = [labels[i] for i in tr_idx]
-        va_bags = [bags[i] for i in va_idx]
-        va_labels = [labels[i] for i in va_idx]
-
-        for epoch in range(args.abmil_epochs):
-            fold_model.train()
-            indices = np.random.permutation(len(tr_bags))
-            for i in indices:
-                bag = tr_bags[i].to(device)
-                label = torch.tensor(float(tr_labels[i]), device=device)
-                logit, _ = fold_model(bag)
-                loss = criterion(logit, label)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        fold_model.eval()
-        va_proba, va_true = [], []
-        with torch.no_grad():
-            for i in range(len(va_bags)):
-                logit, _ = fold_model(va_bags[i].to(device))
-                va_proba.append(torch.sigmoid(logit).cpu().item())
-                va_true.append(va_labels[i])
-        va_preds = [int(p >= 0.5) for p in va_proba]
-        va_true_arr = np.array(va_true)
-        va_preds_arr = np.array(va_preds)
-        va_proba_arr = np.array(va_proba)
-        fold_accs.append(balanced_accuracy_score(va_true_arr, va_preds_arr))
-        fold_f1s.append(f1_score(va_true_arr, va_preds_arr, average="weighted", zero_division=0))
-        fold_aurocs.append(roc_auc_score(va_true_arr, va_proba_arr))
-        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
-
-    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
-          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
-          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
-
-    # ── Train final model on all data ────────────────────────────────────
-    print(f"\nTraining final ABMIL on all {len(bags)} training compounds ...")
+    # ── Train model on all data ──────────────────────────────────────────
+    print(f"\nTraining ABMIL on all {len(bags)} training compounds ...")
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
