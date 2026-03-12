@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Subtract per-plate averaged control embedding from treated embeddings",
     )
+    p.add_argument(
+        "--balance",
+        action="store_true",
+        help="Undersample majority class to balance the training set",
+    )
 
     # ── Inference data ──
     p.add_argument(
@@ -248,17 +253,18 @@ def main() -> None:
     if X_train.shape[0] == 0:
         raise RuntimeError("No compounds matched between embeddings and efficacy.")
 
-    # ── Balance training set (undersample majority class) ────────────────────
-    active_idx = np.where(y_train == 1)[0]
-    inactive_idx = np.where(y_train == 0)[0]
-    n_minority = min(len(active_idx), len(inactive_idx))
-    rng = np.random.RandomState(args.seed)
-    active_sampled = rng.choice(active_idx, size=n_minority, replace=False)
-    inactive_sampled = rng.choice(inactive_idx, size=n_minority, replace=False)
-    balanced_idx = np.sort(np.concatenate([active_sampled, inactive_sampled]))
-    X_train = X_train[balanced_idx]
-    y_train = y_train[balanced_idx]
-    print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
+    # ── Optionally balance training set (undersample majority class) ────────
+    if args.balance:
+        active_idx = np.where(y_train == 1)[0]
+        inactive_idx = np.where(y_train == 0)[0]
+        n_minority = min(len(active_idx), len(inactive_idx))
+        rng = np.random.RandomState(args.seed)
+        active_sampled = rng.choice(active_idx, size=n_minority, replace=False)
+        inactive_sampled = rng.choice(inactive_idx, size=n_minority, replace=False)
+        balanced_idx = np.sort(np.concatenate([active_sampled, inactive_sampled]))
+        X_train = X_train[balanced_idx]
+        y_train = y_train[balanced_idx]
+        print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
