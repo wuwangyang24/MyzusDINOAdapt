@@ -1,19 +1,36 @@
 """
 train_classifier_500ppm.py
 
-Train a binary XGBoost classifier on embeddings_20ppm + efficacy.pt, then run
-inference on embeddings_100ppm and evaluate against efficacy_500ppm.pt.
+Train a binary classifier (XGBoost or Gated ABMIL) on embeddings_20ppm +
+efficacy.pt, then run inference on embeddings_100ppm and evaluate against
+efficacy_500ppm.
+
+Classifiers
+-----------
+  - xgboost : mean-pools instance embeddings per compound, then XGBoost.
+  - abmil   : Gated Attention-Based MIL — learns instance-level attention
+               weights over variable-length bags (no mean-pooling).
 
 Workflow
 --------
-  1. TRAIN  — fit XGBoost on embeddings_20ppm / efficacy.pt  (no logging)
-  2. INFER  — predict on embeddings_100ppm, evaluate vs efficacy_500ppm.pt
+  1. TRAIN  — fit classifier on embeddings_20ppm / efficacy.pt
+  2. INFER  — predict on embeddings_100ppm, evaluate vs efficacy_500ppm
              Logs: classification report, confusion matrix, AUROC curve,
              predictions CSV.
 
 Usage
 -----
+  # XGBoost (default)
   python Experiments/train_classifier_500ppm.py \\
+      --classifier xgboost \\
+      --embeddings           Experiments/embeddings_20ppm.pt \\
+      --efficacy             Experiments/efficacy.pt \\
+      --inference_embeddings Experiments/embeddings_100ppm.pt \\
+      --inference_efficacy   Experiments/efficacy_500ppm.csv
+
+  # Gated ABMIL
+  python Experiments/train_classifier_500ppm.py \\
+      --classifier abmil \\
       --embeddings           Experiments/embeddings_20ppm.pt \\
       --efficacy             Experiments/efficacy.pt \\
       --inference_embeddings Experiments/embeddings_100ppm.pt \\
