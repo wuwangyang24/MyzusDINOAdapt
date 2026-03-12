@@ -466,168 +466,213 @@ def main() -> None:
     }
     print(f"  {len(inf_cid2label)} compounds in inference efficacy file.")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # ABMIL path
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Run classifier ──────────────────────────────────────────────────────
     if args.classifier == "abmil":
-        train_bags, train_labels, _ = build_mil_bags(
-            embeddings, cid2label, args.subtract_control,
+        inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_abmil(
+            embeddings, cid2label, inf_embeddings, inf_cid2label, args, device,
         )
-        print(f"  {len(train_bags)} training compounds (bags), feature dim {train_bags[0].shape[1]}.")
-        if len(train_bags) == 0:
-            raise RuntimeError("No compounds matched between embeddings and efficacy.")
-
-        model = train_abmil(train_bags, train_labels, args, device)
-
-        inf_bags, inf_labels, cids_inf = build_mil_bags(
-            inf_embeddings, inf_cid2label, args.subtract_control,
-        )
-        y_inf = np.array(inf_labels)
-        print(f"  {len(inf_bags)} inference compounds (bags).")
-        if len(inf_bags) == 0:
-            raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
-
-        inf_preds, inf_proba = infer_abmil(model, inf_bags, device)
-        classifier_label = "ABMIL"
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # XGBoost path
-    # ══════════════════════════════════════════════════════════════════════════
     else:
-        # ── Build training features ──────────────────────────────────────
-        X_train, y_train, _ = build_mean_latent_features(
-            embeddings, cid2label, args.subtract_control,
-        )
-        print(f"  {X_train.shape[0]} training compounds, feature dim {X_train.shape[1]}.")
-
-        if X_train.shape[0] == 0:
-            raise RuntimeError("No compounds matched between embeddings and efficacy.")
-
-        # ── Optionally balance training set (undersample majority) ──────
-        if args.balance:
-            active_idx = np.where(y_train == 1)[0]
-            inactive_idx = np.where(y_train == 0)[0]
-            n_minority = min(len(active_idx), len(inactive_idx))
-            rng = np.random.RandomState(args.seed)
-            active_sampled = rng.choice(active_idx, size=n_minority, replace=False)
-            inactive_sampled = rng.choice(inactive_idx, size=n_minority, replace=False)
-            balanced_idx = np.sort(np.concatenate([active_sampled, inactive_sampled]))
-            X_train = X_train[balanced_idx]
-            y_train = y_train[balanced_idx]
-            print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
-
-        # ── XGBoost parameters (defaults or from CLI) ────────────────────
-        xgb_params = dict(
-            n_estimators=args.xgb_n_estimators,
-            max_depth=args.xgb_max_depth,
-            learning_rate=args.xgb_learning_rate,
-            subsample=args.xgb_subsample,
-            colsample_bytree=args.xgb_colsample_bytree,
+        inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_xgboost(
+            embeddings, cid2label, inf_embeddings, inf_cid2label, args,
         )
 
-        # ── Optionally use scale_pos_weight ──────────────────────────────
-        if args.scale_pos_weight:
-            n_pos = int(y_train.sum())
-            n_neg = len(y_train) - n_pos
-            if n_pos > 0:
-                spw = n_neg / n_pos
-                xgb_params["scale_pos_weight"] = spw
-                print(f"  XGBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
+    # ── Evaluate & save ──────────────────────────────────────────────────
+    _evaluate_and_report(
+        y_inf, inf_preds, inf_proba, cids_inf,
+        classifier_label, args, output_dir,
+    )
 
-        # ── Optional hyperparameter tuning ───────────────────────────────
-        if args.tune:
-            print(f"\nHyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
-            param_distributions = {
-                "n_estimators": [500, 1000, 2000],
-                "max_depth": [5, 10, 20],
-                "learning_rate": [0.01, 0.05, 0.1],
-                "subsample": [0.7, 0.8, 1.0],
-                "colsample_bytree": [0.7, 0.8, 1.0],
-                "min_child_weight": [1, 3, 5, 7],
-                "gamma": [0, 0.3, 0.6, 1.0],
-                "reg_alpha": [0, 0.1, 0.5, 1.0],
-                "reg_lambda": [0.5, 1.0, 5.0],
-            }
-            cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
-            param_list = list(ParameterSampler(param_distributions, n_iter=args.tune_iter, random_state=args.seed))
-            best_score, best_params = -1, None
-            for params in tqdm(param_list, desc="Tuning XGBoost"):
-                tmp_clf = xgb.XGBClassifier(
-                    **params,
-                    objective="binary:logistic",
-                    eval_metric="auc",
-                    use_label_encoder=False,
-                    random_state=args.seed,
-                    n_jobs=-1,
-                )
-                scores = cross_val_score(tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
-                mean_score = scores.mean()
-                if mean_score > best_score:
-                    best_score = mean_score
-                    best_params = params
-            xgb_params = dict(best_params)
-            print(f"  Best AUROC: {best_score:.4f}")
-            print(f"  Best params: {xgb_params}")
 
-        # ── 5-Fold Cross Validation ──────────────────────────────────────
-        print("\n5-Fold Cross Validation on training data ...")
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
-        fold_accs, fold_f1s, fold_aurocs = [], [], []
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5.  Classifier runners
+# ═══════════════════════════════════════════════════════════════════════════════
 
-        for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-            X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-            y_tr, y_va = y_train[tr_idx], y_train[va_idx]
 
-            fold_clf = xgb.XGBClassifier(
-                **xgb_params,
+def _run_abmil(
+    embeddings: Dict,
+    cid2label: Dict[str, int],
+    inf_embeddings: Dict,
+    inf_cid2label: Dict[str, int],
+    args: argparse.Namespace,
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
+    """Train ABMIL, run inference, return (preds, proba, y_true, cids, label)."""
+    train_bags, train_labels, _ = build_mil_bags(
+        embeddings, cid2label, args.subtract_control,
+    )
+    print(f"  {len(train_bags)} training compounds (bags), feature dim {train_bags[0].shape[1]}.")
+    if len(train_bags) == 0:
+        raise RuntimeError("No compounds matched between embeddings and efficacy.")
+
+    model = train_abmil(train_bags, train_labels, args, device)
+
+    inf_bags, inf_labels, cids_inf = build_mil_bags(
+        inf_embeddings, inf_cid2label, args.subtract_control,
+    )
+    y_inf = np.array(inf_labels)
+    print(f"  {len(inf_bags)} inference compounds (bags).")
+    if len(inf_bags) == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
+    inf_preds, inf_proba = infer_abmil(model, inf_bags, device)
+    return inf_preds, inf_proba, y_inf, cids_inf, "ABMIL"
+
+
+def _run_xgboost(
+    embeddings: Dict,
+    cid2label: Dict[str, int],
+    inf_embeddings: Dict,
+    inf_cid2label: Dict[str, int],
+    args: argparse.Namespace,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
+    """Train XGBoost, run inference, return (preds, proba, y_true, cids, label)."""
+    # ── Build training features ──────────────────────────────────────────
+    X_train, y_train, _ = build_mean_latent_features(
+        embeddings, cid2label, args.subtract_control,
+    )
+    print(f"  {X_train.shape[0]} training compounds, feature dim {X_train.shape[1]}.")
+
+    if X_train.shape[0] == 0:
+        raise RuntimeError("No compounds matched between embeddings and efficacy.")
+
+    # ── Optionally balance training set (undersample majority) ───────────
+    if args.balance:
+        active_idx = np.where(y_train == 1)[0]
+        inactive_idx = np.where(y_train == 0)[0]
+        n_minority = min(len(active_idx), len(inactive_idx))
+        rng = np.random.RandomState(args.seed)
+        active_sampled = rng.choice(active_idx, size=n_minority, replace=False)
+        inactive_sampled = rng.choice(inactive_idx, size=n_minority, replace=False)
+        balanced_idx = np.sort(np.concatenate([active_sampled, inactive_sampled]))
+        X_train = X_train[balanced_idx]
+        y_train = y_train[balanced_idx]
+        print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
+
+    # ── XGBoost parameters (defaults or from CLI) ────────────────────────
+    xgb_params = dict(
+        n_estimators=args.xgb_n_estimators,
+        max_depth=args.xgb_max_depth,
+        learning_rate=args.xgb_learning_rate,
+        subsample=args.xgb_subsample,
+        colsample_bytree=args.xgb_colsample_bytree,
+    )
+
+    # ── Optionally use scale_pos_weight ──────────────────────────────────
+    if args.scale_pos_weight:
+        n_pos = int(y_train.sum())
+        n_neg = len(y_train) - n_pos
+        if n_pos > 0:
+            spw = n_neg / n_pos
+            xgb_params["scale_pos_weight"] = spw
+            print(f"  XGBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
+
+    # ── Optional hyperparameter tuning ───────────────────────────────────
+    if args.tune:
+        print(f"\nHyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
+        param_distributions = {
+            "n_estimators": [500, 1000, 2000],
+            "max_depth": [5, 10, 20],
+            "learning_rate": [0.01, 0.05, 0.1],
+            "subsample": [0.7, 0.8, 1.0],
+            "colsample_bytree": [0.7, 0.8, 1.0],
+            "min_child_weight": [1, 3, 5, 7],
+            "gamma": [0, 0.3, 0.6, 1.0],
+            "reg_alpha": [0, 0.1, 0.5, 1.0],
+            "reg_lambda": [0.5, 1.0, 5.0],
+        }
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+        param_list = list(ParameterSampler(param_distributions, n_iter=args.tune_iter, random_state=args.seed))
+        best_score, best_params = -1, None
+        for params in tqdm(param_list, desc="Tuning XGBoost"):
+            tmp_clf = xgb.XGBClassifier(
+                **params,
                 objective="binary:logistic",
                 eval_metric="auc",
                 use_label_encoder=False,
                 random_state=args.seed,
                 n_jobs=-1,
-                early_stopping_rounds=args.xgb_early_stopping,
             )
-            fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+            scores = cross_val_score(tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1)
+            mean_score = scores.mean()
+            if mean_score > best_score:
+                best_score = mean_score
+                best_params = params
+        xgb_params = dict(best_params)
+        print(f"  Best AUROC: {best_score:.4f}")
+        print(f"  Best params: {xgb_params}")
 
-            va_preds = fold_clf.predict(X_va)
-            va_proba = fold_clf.predict_proba(X_va)[:, 1]
-            fold_accs.append(balanced_accuracy_score(y_va, va_preds))
-            fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
-            fold_aurocs.append(roc_auc_score(y_va, va_proba))
-            print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
+    # ── 5-Fold Cross Validation ──────────────────────────────────────────
+    print("\n5-Fold Cross Validation on training data ...")
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    fold_accs, fold_f1s, fold_aurocs = [], [], []
 
-        print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
-              f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
-              f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
+    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
+        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
 
-        # ── Train final model on all training data ───────────────────────
-        clf = xgb.XGBClassifier(
+        fold_clf = xgb.XGBClassifier(
             **xgb_params,
             objective="binary:logistic",
+            eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
             n_jobs=-1,
             early_stopping_rounds=args.xgb_early_stopping,
         )
-        print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
-        clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
-        print("Training done.\n")
+        fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
 
-        # ── Inference features ───────────────────────────────────────────
-        X_inf, y_inf, cids_inf = build_mean_latent_features(
-            inf_embeddings, inf_cid2label, args.subtract_control,
-        )
-        print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
-        if X_inf.shape[0] == 0:
-            raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+        va_preds = fold_clf.predict(X_va)
+        va_proba = fold_clf.predict_proba(X_va)[:, 1]
+        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
+        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
+        fold_aurocs.append(roc_auc_score(y_va, va_proba))
+        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
 
-        inf_preds = clf.predict(X_inf)
-        inf_proba = clf.predict_proba(X_inf)[:, 1]
-        classifier_label = "XGBoost"
+    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
+          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
+          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Shared evaluation & reporting
-    # ══════════════════════════════════════════════════════════════════════════
+    # ── Train final model on all training data ───────────────────────────
+    clf = xgb.XGBClassifier(
+        **xgb_params,
+        objective="binary:logistic",
+        use_label_encoder=False,
+        random_state=args.seed,
+        n_jobs=-1,
+        early_stopping_rounds=args.xgb_early_stopping,
+    )
+    print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
+    clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
+    print("Training done.\n")
+
+    # ── Inference features ───────────────────────────────────────────────
+    X_inf, y_inf, cids_inf = build_mean_latent_features(
+        inf_embeddings, inf_cid2label, args.subtract_control,
+    )
+    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
+    if X_inf.shape[0] == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
+    inf_preds = clf.predict(X_inf)
+    inf_proba = clf.predict_proba(X_inf)[:, 1]
+    return inf_preds, inf_proba, y_inf, cids_inf, "XGBoost"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6.  Shared evaluation & reporting
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _evaluate_and_report(
+    y_inf: np.ndarray,
+    inf_preds: np.ndarray,
+    inf_proba: np.ndarray,
+    cids_inf: List[str],
+    classifier_label: str,
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> None:
+    """Compute metrics, print report, and save outputs."""
     inf_acc = balanced_accuracy_score(y_inf, inf_preds)
     inf_f1 = f1_score(y_inf, inf_preds, average="weighted", zero_division=0)
     inf_auroc = roc_auc_score(y_inf, inf_proba)
