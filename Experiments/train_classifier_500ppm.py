@@ -306,7 +306,7 @@ def main() -> None:
             tmp_clf = xgb.XGBClassifier(
                 **params,
                 objective="binary:logistic",
-                eval_metric="logloss",
+                eval_metric="auc",
                 use_label_encoder=False,
                 random_state=args.seed,
                 n_jobs=-1,
@@ -332,7 +332,7 @@ def main() -> None:
         fold_clf = xgb.XGBClassifier(
             **xgb_params,
             objective="binary:logistic",
-            eval_metric="logloss",
+            eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
             n_jobs=-1,
