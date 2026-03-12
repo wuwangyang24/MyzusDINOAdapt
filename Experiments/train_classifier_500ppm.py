@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run randomized hyperparameter search before training",
     )
-    p.add_argument("--tune_iter", type=int, default=50, help="Number of random search iterations (default: 50)")
+    p.add_argument("--tune_iter", type=int, default=100, help="Number of random search iterations (default: 50)")
 
     # ── Inference data ──
     p.add_argument(
@@ -199,7 +199,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # ── XGBoost hyper-parameters ──
-    p.add_argument("--xgb_n_estimators", type=int, default=300, help="XGBoost rounds (default: 300)")
+    p.add_argument("--xgb_n_estimators", type=int, default=1000, help="XGBoost rounds (default: 300)")
     p.add_argument("--xgb_max_depth", type=int, default=6, help="XGBoost max depth (default: 6)")
     p.add_argument("--xgb_learning_rate", type=float, default=0.1, help="XGBoost lr (default: 0.1)")
     p.add_argument("--xgb_subsample", type=float, default=0.8, help="XGBoost row subsample (default: 0.8)")
@@ -355,14 +355,14 @@ def main() -> None:
     clf = xgb.XGBClassifier(
         **xgb_params,
         objective="binary:logistic",
-        eval_metric="logloss",
+        eval_metric="auc",
         use_label_encoder=False,
         random_state=args.seed,
         n_jobs=-1,
         early_stopping_rounds=args.xgb_early_stopping,
     )
     print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
-    clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=True)
+    clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
     print("Training done.\n")
 
     # ══════════════════════════════════════════════════════════════════════════
