@@ -416,11 +416,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     # ── XGBoost hyper-parameters ──
-    p.add_argument("--xgb_n_estimators", type=int, default=1000, help="XGBoost rounds (default: 300)")
-    p.add_argument("--xgb_max_depth", type=int, default=6, help="XGBoost max depth (default: 6)")
-    p.add_argument("--xgb_learning_rate", type=float, default=0.1, help="XGBoost lr (default: 0.1)")
+    p.add_argument("--xgb_n_estimators", type=int, default=2000, help="XGBoost rounds (default: 2000)")
+    p.add_argument("--xgb_max_depth", type=int, default=20, help="XGBoost max depth (default: 20)")
+    p.add_argument("--xgb_learning_rate", type=float, default=0.01, help="XGBoost lr (default: 0.01)")
     p.add_argument("--xgb_subsample", type=float, default=0.8, help="XGBoost row subsample (default: 0.8)")
-    p.add_argument("--xgb_colsample_bytree", type=float, default=0.8, help="XGBoost col subsample (default: 0.8)")
+    p.add_argument("--xgb_colsample_bytree", type=float, default=0.7, help="XGBoost col subsample (default: 0.7)")
+    p.add_argument("--xgb_min_child_weight", type=int, default=7, help="XGBoost min child weight (default: 7)")
+    p.add_argument("--xgb_gamma", type=float, default=0.0, help="XGBoost gamma (default: 0)")
+    p.add_argument("--xgb_reg_alpha", type=float, default=0.0, help="XGBoost L1 reg (default: 0)")
+    p.add_argument("--xgb_reg_lambda", type=float, default=5.0, help="XGBoost L2 reg (default: 5.0)")
     p.add_argument("--xgb_early_stopping", type=int, default=20, help="XGBoost early stopping (default: 20)")
 
     # ── ABMIL hyper-parameters ──
@@ -553,6 +557,10 @@ def main() -> None:
             learning_rate=args.xgb_learning_rate,
             subsample=args.xgb_subsample,
             colsample_bytree=args.xgb_colsample_bytree,
+            min_child_weight=args.xgb_min_child_weight,
+            gamma=args.xgb_gamma,
+            reg_alpha=args.xgb_reg_alpha,
+            reg_lambda=args.xgb_reg_lambda,
         )
 
         # ── Optional hyperparameter tuning ───────────────────────────────
