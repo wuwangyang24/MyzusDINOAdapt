@@ -194,7 +194,7 @@ def parse_args() -> argparse.Namespace:
     # ── Misc ──
     p.add_argument(
         "--model_name",
-        default="dino",
+        default="dinov2_vits14",
         help="Name of the model that produced the embeddings (included in output path and report)",
     )
     p.add_argument(
