@@ -395,7 +395,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--balance",
         action="store_true",
-        help="Undersample majority class to balance the training set",
+        help="Balance classes: undersample majority (XGBoost) or pos_weight (ABMIL)",
+    )
+    p.add_argument(
+        "--scale_pos_weight",
+        action="store_true",
+        help="XGBoost: use scale_pos_weight=n_neg/n_pos instead of undersampling (requires --balance is NOT set)",
     )
     p.add_argument(
         "--tune",
@@ -567,6 +572,15 @@ def main() -> None:
             subsample=args.xgb_subsample,
             colsample_bytree=args.xgb_colsample_bytree,
         )
+
+        # ── Optionally use scale_pos_weight ──────────────────────────────
+        if args.scale_pos_weight:
+            n_pos = int(y_train.sum())
+            n_neg = len(y_train) - n_pos
+            if n_pos > 0:
+                spw = n_neg / n_pos
+                xgb_params["scale_pos_weight"] = spw
+                print(f"  XGBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
 
         # ── Optional hyperparameter tuning ───────────────────────────────
         if args.tune:
