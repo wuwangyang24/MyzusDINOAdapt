@@ -231,12 +231,14 @@ def train_abmil(
         for i in indices:
             bag = bags[i].to(device)
             label = torch.tensor(float(labels[i]), device=device)
+            optimizer.zero_grad()
             logit, _ = model(bag)
             loss = criterion(logit, label)
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
+        if (epoch + 1) % 50 == 0 or epoch == 0:
+            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={epoch_loss/len(bags):.4f}")
 
     print("Training done.\n")
     return model
