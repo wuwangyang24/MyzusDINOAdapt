@@ -193,6 +193,11 @@ def parse_args() -> argparse.Namespace:
 
     # ── Misc ──
     p.add_argument(
+        "--model_name",
+        default="dino",
+        help="Name of the model that produced the embeddings (included in output path and report)",
+    )
+    p.add_argument(
         "--output_dir",
         default="Experiments/runs/efficacy_classifier",
         help="Output directory (default: Experiments/runs/efficacy_classifier)",
@@ -216,7 +221,7 @@ def main() -> None:
     # ── Reproducibility ──────────────────────────────────────────────────────
     np.random.seed(args.seed)
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) / args.model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load data ────────────────────────────────────────────────────────────
@@ -352,6 +357,7 @@ def main() -> None:
     # Save report
     report_path = output_dir / "classification_report.txt"
     with open(report_path, "w") as f:
+        f.write(f"Model                : {args.model_name}\n")
         f.write(f"Train embeddings     : {args.embeddings}\n")
         f.write(f"Train efficacy       : {args.efficacy}\n")
         f.write(f"Inference embeddings : {args.inference_embeddings}\n")
