@@ -4,17 +4,17 @@ train_synthesis_classifier.py
 Train a classifier to predict the synthesis program of a compound from its
 DINO embeddings.  Two classifiers are available:
 
-  1. **Transformer** (default) — CLS-token set encoder over all treated latents
+  1. **Gated ABMIL** (default) — Gated Attention-Based MIL over variable-length
+     bags of instance embeddings (no mean-pooling)
   2. **XGBoost** — gradient-boosted trees on the mean latent per compound
 
-DATA FLOW  (Transformer)
+DATA FLOW  (Gated ABMIL)
 -------------------------
 For each compound:
   1. Collect all treated latent vectors across every plate  →  (M, D)
      (optionally subtract the per-plate averaged control embedding first)
-  2. Prepend a learnable [CLS] token                        →  (M+1, D)
-  3. Pass through a Transformer Encoder                     →  (M+1, D)
-  4. Take [CLS] output                                      →  (D,) → FC → num_classes
+  2. Compute gated attention weights over instances          →  (M,)
+  3. Weighted-sum bag representation                         →  (D,) → FC → num_classes
 
 DATA FLOW  (XGBoost)
 ---------------------
@@ -40,19 +40,19 @@ Inputs
 
 Usage examples
 --------------
-  # basic (Transformer)
+  # Gated ABMIL (default)
   python Experiments/train_synthesis_classifier.py \\
       --embeddings Experiments/embeddings.pt \\
       --metadata   data/compound_metadata.csv \\
       --output_dir Experiments/runs/classifier
 
-  # with control subtraction, custom transformer hyper-parameters
+  # Gated ABMIL with control subtraction, custom hyper-parameters
   python Experiments/train_synthesis_classifier.py \\
       --embeddings       Experiments/embeddings.pt \\
       --metadata         data/compound_metadata.csv \\
       --subtract_control \\
-      --d_model 256 --nhead 8 --num_layers 4 \\
-      --epochs 100 --lr 3e-4 --batch_size 16
+      --abmil_hidden 128 --abmil_dropout 0.25 \\
+      --abmil_epochs 200 --abmil_lr 1e-3
 
   # XGBoost on mean latents with control subtraction
   python Experiments/train_synthesis_classifier.py \\
@@ -82,11 +82,14 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader, random_split
 from sklearn.metrics import (
     balanced_accuracy_score, f1_score, classification_report, confusion_matrix
 )
@@ -108,107 +111,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 1.  Dataset
-# ═══════════════════════════════════════════════════════════════════════════════
-
-class CompoundSynthesisDataset(Dataset):
-    """
-    One sample = one compound.
-
-    Returns
-    -------
-    latents : torch.FloatTensor  shape (M, D)
-        All treated image embeddings across every plate for the compound.
-        If subtract_control=True, each treated embedding has its plate's
-        averaged control embedding subtracted before stacking.
-    label   : int
-        Integer class index of the synthesis program.
-    compound_id : str
-        Original compound identifier (useful for debugging).
-    """
-
-    def __init__(
-        self,
-        embeddings: Dict,
-        compound_col: pd.Series,
-        label_col: pd.Series,
-        label2idx: Dict[str, int],
-        subtract_control: bool = False,
-    ):
-        self.subtract_control = subtract_control
-        self.samples: List[Tuple[torch.Tensor, int, str]] = []
-
-        # Build compound → label map from the DataFrame columns
-        comp2label: Dict[str, int] = {}
-        for comp, prog in zip(compound_col, label_col):
-            comp2label[str(comp)] = label2idx[str(prog)]
-
-        for compound_id, plates in embeddings.items():
-            cid = str(compound_id)
-            if cid not in comp2label:
-                continue
-
-            plate_latents: List[torch.Tensor] = []
-            for plate_data in plates.values():
-                treated = plate_data.get("treated")   # (N, D) or missing
-                if treated is None or treated.numel() == 0:
-                    continue
-
-                if subtract_control and "control" in plate_data:
-                    control = plate_data["control"]   # (D,)
-                    treated = treated - control.unsqueeze(0)
-
-                plate_latents.append(treated.float())
-
-            if not plate_latents:
-                continue  # compound has no treated images — skip
-
-            all_latents = torch.cat(plate_latents, dim=0)   # (M, D)
-            self.samples.append((all_latents, comp2label[cid], cid))
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        latents, label, cid = self.samples[idx]
-        return latents, label, cid
-
-
-def collate_fn(
-    batch: List[Tuple[torch.Tensor, int, str]]
-) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
-    """
-    Pad variable-length bags to the max bag size in the batch.
-
-    Returns
-    -------
-    padded   : (B, max_M, D)
-    mask     : (B, max_M)  — True means 'ignore this position' (padding)
-    labels   : (B,)
-    cids     : List[str]
-    """
-    latents_list, labels, cids = zip(*batch)
-    max_m = max(t.shape[0] for t in latents_list)
-    d = latents_list[0].shape[1]
-
-    padded = torch.zeros(len(batch), max_m, d)
-    mask = torch.ones(len(batch), max_m, dtype=torch.bool)  # True = padded
-
-    for i, t in enumerate(latents_list):
-        m = t.shape[0]
-        padded[i, :m] = t
-        mask[i, :m] = False                                  # False = real token
-
-    return (
-        padded,
-        mask,
-        torch.tensor(labels, dtype=torch.long),
-        list(cids),
-    )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1b. Efficacy-based Dataset & helpers
+# 1.  Data loading helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def load_efficacy_data(path: str) -> Dict[str, float]:
@@ -219,38 +122,6 @@ def load_efficacy_data(path: str) -> Dict[str, float]:
     """
     data = torch.load(path, map_location="cpu", weights_only=False)
     return {str(entry['Compound']): float(entry['Efficacy']) for entry in data}
-
-
-class EfficacyDataset(Dataset):
-    """
-    One sample = one compound, using efficacy as the sole feature.
-
-    Returns (1, 1) tensor, int label, compound_id string.
-    """
-
-    def __init__(
-        self,
-        efficacy: Dict[str, float],
-        compound_col: pd.Series,
-        label_col: pd.Series,
-        label2idx: Dict[str, int],
-    ):
-        self.samples: List[Tuple[torch.Tensor, int, str]] = []
-        comp2label: Dict[str, int] = {}
-        for comp, prog in zip(compound_col, label_col):
-            comp2label[str(comp)] = label2idx[str(prog)]
-
-        for cid, eff_val in efficacy.items():
-            if cid not in comp2label:
-                continue
-            feat = torch.tensor([[eff_val]], dtype=torch.float32)  # (1, 1)
-            self.samples.append((feat, comp2label[cid], cid))
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int):
-        return self.samples[idx]
 
 
 def build_efficacy_features(
@@ -276,152 +147,140 @@ def build_efficacy_features(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 2.  Model
+# 2.  Model — Gated Attention-Based MIL (ABMIL)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class SynthesisProgramClassifier(nn.Module):
-    """
-    Transformer Encoder + CLS-token classifier for compound synthesis programs.
 
-    Architecture
-    ------------
-    Input projection  : Linear(D, d_model)
-    CLS token         : learnable (1, d_model)
-    Transformer Enc.  : num_layers × (MultiHeadAttn + FFN)
-    Classification    : LayerNorm → Linear(d_model, num_classes)
-    """
+class GatedABMIL(nn.Module):
+    """Gated Attention-Based Multiple Instance Learning classifier (multi-class)."""
 
-    def __init__(
-        self,
-        input_dim: int,
-        num_classes: int,
-        d_model: int = 256,
-        nhead: int = 8,
-        num_layers: int = 4,
-        dim_feedforward: int = 1024,
-        dropout: float = 0.1,
-    ):
+    def __init__(self, input_dim: int, num_classes: int, hidden_dim: int = 128, dropout: float = 0.25):
         super().__init__()
-
-        # Project DINO features to model dimension
-        self.input_proj = nn.Linear(input_dim, d_model)
-
-        # Learnable [CLS] token
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
-        nn.init.trunc_normal_(self.cls_token, std=0.02)
-
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,      # (B, S, D) convention
-            norm_first=True,       # pre-norm for stability
+        self.attention_V = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Tanh(),
         )
-        self.transformer = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers,
-            norm=nn.LayerNorm(d_model),
+        self.attention_U = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.Sigmoid(),
         )
-
-        # Classification head
+        self.attention_w = nn.Linear(hidden_dim, 1)
         self.classifier = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, d_model // 2),
-            nn.GELU(),
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model // 2, num_classes),
+            nn.Linear(hidden_dim, num_classes),
         )
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        padding_mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Args
-        ----
-        x            : (B, M, D)   — bag of treated embeddings
-        padding_mask : (B, M)      — True where positions are padding
+    def forward(self, bag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass.
+
+        Parameters
+        ----------
+        bag : (N_instances, D)
 
         Returns
         -------
-        logits : (B, num_classes)
+        logits : (num_classes,) raw logits
+        att    : (N_instances,) attention weights
         """
-        B = x.shape[0]
-
-        # Project to model dimension
-        x = self.input_proj(x)                    # (B, M, d_model)
-
-        # Prepend [CLS] token
-        cls = self.cls_token.expand(B, -1, -1)    # (B, 1, d_model)
-        x = torch.cat([cls, x], dim=1)            # (B, M+1, d_model)
-
-        # Extend the padding mask: CLS token is never masked
-        if padding_mask is not None:
-            cls_mask = torch.zeros(B, 1, dtype=torch.bool, device=x.device)
-            padding_mask = torch.cat([cls_mask, padding_mask], dim=1)  # (B, M+1)
-
-        # Transformer
-        x = self.transformer(x, src_key_padding_mask=padding_mask)   # (B, M+1, d_model)
-
-        # Take [CLS] output → classify
-        cls_out = x[:, 0]                          # (B, d_model)
-        logits = self.classifier(cls_out)           # (B, num_classes)
-        return logits
+        V = self.attention_V(bag)             # (N, H)
+        U = self.attention_U(bag)             # (N, H)
+        att_logits = self.attention_w(V * U)  # (N, 1)
+        att = torch.softmax(att_logits, dim=0)  # (N, 1)
+        bag_repr = (att * bag).sum(dim=0, keepdim=True)  # (1, D)
+        logits = self.classifier(bag_repr).squeeze(0)     # (num_classes,)
+        return logits, att.squeeze()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# 3.  Training helpers
+# 3.  ABMIL Training & Inference helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def run_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
+
+def build_mil_bags(
+    embeddings: Dict,
+    compound_col: pd.Series,
+    label_col: pd.Series,
+    label2idx: Dict[str, int],
+    subtract_control: bool = False,
+) -> Tuple[List[torch.Tensor], List[int], List[str]]:
+    """Build variable-length bags of instance embeddings per compound."""
+    comp2label: Dict[str, int] = {}
+    for comp, prog in zip(compound_col, label_col):
+        comp2label[str(comp)] = label2idx[str(prog)]
+
+    bags, labels, cids = [], [], []
+    for compound_id, plates in embeddings.items():
+        cid = str(compound_id)
+        if cid not in comp2label:
+            continue
+        plate_latents: List[torch.Tensor] = []
+        for plate_data in plates.values():
+            treated = plate_data.get("treated")
+            if treated is None or treated.numel() == 0:
+                continue
+            if subtract_control and "control" in plate_data:
+                control = plate_data["control"]
+                treated = treated - control.unsqueeze(0)
+            plate_latents.append(treated.float())
+        if not plate_latents:
+            continue
+        bags.append(torch.cat(plate_latents, dim=0))
+        labels.append(comp2label[cid])
+        cids.append(cid)
+    return bags, labels, cids
+
+
+def train_abmil(
+    bags: List[torch.Tensor],
+    labels: List[int],
+    num_classes: int,
+    args: argparse.Namespace,
     device: torch.device,
-    optimizer: Optional[torch.optim.Optimizer] = None,
-) -> Dict[str, float]:
-    """Run one train or eval epoch. Pass optimizer=None for eval."""
-    is_train = optimizer is not None
-    model.train(is_train)
+) -> GatedABMIL:
+    """Train Gated ABMIL on all data, return trained model."""
+    input_dim = bags[0].shape[1]
 
-    total_loss = 0.0
-    all_preds: List[int] = []
-    all_labels: List[int] = []
+    torch.manual_seed(args.seed)
+    model = GatedABMIL(input_dim, num_classes, args.abmil_hidden, args.abmil_dropout).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
 
-    ctx = torch.enable_grad() if is_train else torch.no_grad()
-    with ctx:
-        for padded, mask, labels, _ in tqdm(
-            loader,
-            desc="  train" if is_train else "  val  ",
-            leave=False,
-        ):
-            padded = padded.to(device)
-            mask   = mask.to(device)
-            labels = labels.to(device)
+    print(f"\nTraining ABMIL on {len(bags)} compounds ({num_classes} classes) ...")
+    for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
+        model.train()
+        indices = np.random.permutation(len(bags))
+        epoch_loss = 0.0
+        for i in indices:
+            bag = bags[i].to(device)
+            label = torch.tensor(labels[i], dtype=torch.long, device=device)
+            logits, _ = model(bag)
+            loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
 
-            logits = model(padded, padding_mask=mask)
-            loss   = criterion(logits, labels)
+    print("Training done.\n")
+    return model
 
-            if is_train:
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
 
-            total_loss += loss.item() * labels.size(0)
-            preds = logits.detach().argmax(dim=1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.cpu().tolist())
-
-    n = len(all_labels)
-    return {
-        "loss":     total_loss / n,
-        "accuracy": balanced_accuracy_score(all_labels, all_preds),
-        "f1":       f1_score(all_labels, all_preds, average="weighted",
-                             zero_division=0),
-    }
+def infer_abmil(
+    model: GatedABMIL,
+    bags: List[torch.Tensor],
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run inference, return (predictions, class-probabilities)."""
+    model.eval()
+    all_preds, all_probs = [], []
+    with torch.no_grad():
+        for bag in bags:
+            logits, _ = model(bag.to(device))
+            probs = torch.softmax(logits, dim=0).cpu().numpy()
+            all_probs.append(probs)
+            all_preds.append(int(probs.argmax()))
+    return np.array(all_preds), np.stack(all_probs)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -499,7 +358,7 @@ def save_label_encoder(classes: List[str], str2idx: Dict[str, int], path: Path) 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Train a Transformer classifier for compound synthesis programs."
+        description="Train a classifier for compound synthesis programs (Gated ABMIL or XGBoost)."
     )
 
     # ---- Data ----
@@ -519,20 +378,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--val_split", type=float, default=0.2,
                    help="Fraction of compounds used for validation. Default: 0.2")
 
-    # ---- Model ----
-    p.add_argument("--d_model",         type=int,   default=256,  help="Transformer model dim. Default: 256")
-    p.add_argument("--nhead",           type=int,   default=8,    help="Number of attention heads. Default: 8")
-    p.add_argument("--num_layers",      type=int,   default=4,    help="Number of transformer layers. Default: 4")
-    p.add_argument("--dim_feedforward", type=int,   default=1024, help="FFN hidden dim. Default: 1024")
-    p.add_argument("--dropout",         type=float, default=0.1,  help="Dropout rate. Default: 0.1")
-
-    # ---- Training ----
-    p.add_argument("--epochs",      type=int,   default=100,  help="Training epochs. Default: 100")
-    p.add_argument("--batch_size",  type=int,   default=16,   help="Batch size (compounds). Default: 16")
-    p.add_argument("--lr",          type=float, default=3e-4, help="Learning rate. Default: 3e-4")
-    p.add_argument("--weight_decay",type=float, default=1e-4, help="AdamW weight decay. Default: 1e-4")
-    p.add_argument("--patience",    type=int,   default=20,
-                   help="Early-stopping patience (epochs without val improvement). Default: 20")
+    # ---- ABMIL hyper-parameters ----
+    p.add_argument("--abmil_hidden", type=int, default=128,
+                   help="ABMIL attention hidden dim. Default: 128")
+    p.add_argument("--abmil_dropout", type=float, default=0.25,
+                   help="ABMIL dropout. Default: 0.25")
+    p.add_argument("--abmil_lr", type=float, default=1e-3,
+                   help="ABMIL learning rate. Default: 1e-3")
+    p.add_argument("--abmil_wd", type=float, default=1e-4,
+                   help="ABMIL weight decay. Default: 1e-4")
+    p.add_argument("--abmil_epochs", type=int, default=200,
+                   help="ABMIL training epochs. Default: 200")
     p.add_argument("--label_smoothing", type=float, default=0.1,
                    help="Label smoothing for CrossEntropyLoss. Default: 0.1")
 
@@ -542,7 +398,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device",      default=None,
                    help="Torch device. Auto-detected if not specified.")
     p.add_argument("--seed",        type=int, default=42, help="Random seed. Default: 42")
-    p.add_argument("--num_workers", type=int, default=0,  help="DataLoader workers. Default: 0")
     p.add_argument("--save_predictions", action="store_true",
                    help="Save validation predictions + ground truth to predictions.csv")
 
@@ -550,9 +405,9 @@ def parse_args() -> argparse.Namespace:
                    help="Drop synthesis programs with fewer compounds than this. Default: 2")
 
     # ---- Classifier selection ----
-    p.add_argument("--classifier", choices=["transformer", "xgboost"],
-                   default="transformer",
-                   help="Which classifier to use. Default: transformer")
+    p.add_argument("--classifier", choices=["abmil", "xgboost"],
+                   default="abmil",
+                   help="Which classifier to use. Default: abmil")
 
     # ---- XGBoost hyper-parameters ----
     p.add_argument("--xgb_n_estimators", type=int, default=300,
@@ -834,7 +689,7 @@ def main() -> None:
     print(f"  {num_classes} synthesis programs: {classes}")
     save_label_encoder(classes, str2idx, output_dir / "label_encoder.json")
 
-    # ── Route to XGBoost or Transformer ──────────────────────────────────────
+    # ── Route to XGBoost or ABMIL ─────────────────────────────────────────
     if args.classifier == "xgboost":
         _run_xgboost(
             args=args,
@@ -848,162 +703,113 @@ def main() -> None:
         )
         return
 
-    # ── Dataset ───────────────────────────────────────────────────────────────
-    if efficacy is not None:
-        full_dataset = EfficacyDataset(
-            efficacy=efficacy,
-            compound_col=df[args.compound_col],
-            label_col=df[args.label_col],
-            label2idx=str2idx,
-        )
-    else:
-        full_dataset = CompoundSynthesisDataset(
-            embeddings=embeddings,
-            compound_col=df[args.compound_col],
-            label_col=df[args.label_col],
-            label2idx=str2idx,
-            subtract_control=args.subtract_control,
-        )
-    print(f"  {len(full_dataset)} compounds with valid features.")
+    # ══════════════════════════════════════════════════════════════════════════
+    # Gated ABMIL path
+    # ══════════════════════════════════════════════════════════════════════════
+    if embeddings is None:
+        raise ValueError("Gated ABMIL requires --embeddings (not --efficacy).")
 
-    if len(full_dataset) == 0:
+    bags, labels, cids = build_mil_bags(
+        embeddings,
+        compound_col=df[args.compound_col],
+        label_col=df[args.label_col],
+        label2idx=str2idx,
+        subtract_control=args.subtract_control,
+    )
+    print(f"  {len(bags)} compounds with valid bags, feature dim {bags[0].shape[1]}.")
+
+    if len(bags) == 0:
         raise RuntimeError(
-            "Dataset is empty. Check that compound IDs in the input file "
+            "Dataset is empty. Check that compound IDs in the embeddings file "
             "match the compound IDs in the metadata."
         )
 
     # ── Train / val split ─────────────────────────────────────────────────────
-    n_val   = max(1, int(len(full_dataset) * args.val_split))
-    n_train = len(full_dataset) - n_val
-    if n_train < 1:
-        raise RuntimeError(
-            f"Dataset has only {len(full_dataset)} compound(s) — not enough for a "
-            f"train/val split of {args.val_split}. Reduce --val_split or add more data."
-        )
-    train_set, val_set = random_split(
-        full_dataset, [n_train, n_val],
-        generator=torch.Generator().manual_seed(args.seed),
-    )
+    n_total = len(bags)
+    n_val = max(1, int(n_total * args.val_split))
+    n_train = n_total - n_val
+    indices = np.random.permutation(n_total)
+    train_idx, val_idx = indices[:n_train], indices[n_train:]
+
+    train_bags   = [bags[i] for i in train_idx]
+    train_labels = [labels[i] for i in train_idx]
+    val_bags     = [bags[i] for i in val_idx]
+    val_labels   = [labels[i] for i in val_idx]
+    val_cids     = [cids[i] for i in val_idx]
     print(f"  Train: {n_train}  |  Val: {n_val}")
 
-    train_loader = DataLoader(
-        train_set, batch_size=args.batch_size, shuffle=True,
-        collate_fn=collate_fn, num_workers=args.num_workers,
-    )
-    val_loader = DataLoader(
-        val_set, batch_size=args.batch_size, shuffle=False,
-        collate_fn=collate_fn, num_workers=args.num_workers,
-    )
+    # ── Train model ───────────────────────────────────────────────────────────
+    model = train_abmil(train_bags, train_labels, num_classes, args, device)
 
-    # ── Infer input_dim from first sample ────────────────────────────────────
-    sample_latents, _, _ = full_dataset[0]
-    input_dim = sample_latents.shape[-1]
-    print(f"\nEmbedding dim (D) : {input_dim}")
+    # ── Save model ────────────────────────────────────────────────────────────
+    torch.save(model.state_dict(), output_dir / "best_model.pt")
 
-    # ── Model ─────────────────────────────────────────────────────────────────
-    model = SynthesisProgramClassifier(
-        input_dim=input_dim,
-        num_classes=num_classes,
-        d_model=args.d_model,
-        nhead=args.nhead,
-        num_layers=args.num_layers,
-        dim_feedforward=args.dim_feedforward,
-        dropout=args.dropout,
-    ).to(device)
+    # ── Evaluate on validation set ────────────────────────────────────────────
+    val_preds, val_probs = infer_abmil(model, val_bags, device)
+    val_true = np.array(val_labels)
 
-    n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable params  : {n_params:,}")
+    val_acc = balanced_accuracy_score(val_true, val_preds)
+    val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
 
-    # ── Loss, optimizer, scheduler ───────────────────────────────────────────
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-    optimizer = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
-    )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=args.lr * 0.01
-    )
-
-    # ── Training loop ─────────────────────────────────────────────────────────
-    best_val_acc = -1.0
-    patience_counter = 0
-    log_rows: List[Dict] = []
-
-    print(f"\n{'Epoch':>6}  {'TrainLoss':>10}  {'TrainAcc':>9}  "
-          f"{'ValLoss':>8}  {'ValAcc':>8}  {'ValF1':>7}")
-    print("─" * 62)
-
-    for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, criterion, device, optimizer)
-        val_metrics   = run_epoch(model, val_loader,   criterion, device)
-        scheduler.step()
-
-        row = {"epoch": epoch, **{f"train_{k}": v for k, v in train_metrics.items()},
-               **{f"val_{k}": v for k, v in val_metrics.items()}}
-        log_rows.append(row)
-
-        print(f"{epoch:>6}  {train_metrics['loss']:>10.4f}  "
-              f"{train_metrics['accuracy']:>9.4f}  "
-              f"{val_metrics['loss']:>8.4f}  "
-              f"{val_metrics['accuracy']:>8.4f}  "
-              f"{val_metrics['f1']:>7.4f}")
-
-        # ── Save best model ───────────────────────────────────────────────────
-        if val_metrics["accuracy"] > best_val_acc:
-            best_val_acc = val_metrics["accuracy"]
-            patience_counter = 0
-            torch.save(model.state_dict(), output_dir / "best_model.pt")
-            print(f"         ↑ new best val accuracy: {best_val_acc:.4f}  [saved]")
-        else:
-            patience_counter += 1
-            if patience_counter >= args.patience:
-                print(f"\nEarly stopping triggered after {epoch} epochs "
-                      f"(patience={args.patience}).")
-                break
-
-    # ── Save training log ─────────────────────────────────────────────────────
-    pd.DataFrame(log_rows).to_csv(output_dir / "training_log.csv", index=False)
-
-    # ── Final evaluation with best model ──────────────────────────────────────
-    print(f"\nLoading best model for final evaluation...")
-    model.load_state_dict(torch.load(output_dir / "best_model.pt", map_location=device, weights_only=False))
-    model.eval()
-
-    all_preds:  List[int] = []
-    all_labels: List[int] = []
-    all_cids:   List[str] = []
-    all_probs:  List[List[float]] = []
-
-    with torch.no_grad():
-        for padded, mask, labels, cids in val_loader:
-            padded, mask = padded.to(device), mask.to(device)
-            logits = model(padded, padding_mask=mask)             # (B, num_classes)
-            probs  = torch.softmax(logits, dim=1).cpu().tolist()  # (B, num_classes)
-            preds  = logits.argmax(dim=1).cpu().tolist()
-            all_preds.extend(preds)
-            all_labels.extend(labels.tolist())
-            all_cids.extend(cids)
-            all_probs.extend(probs)
-
-    print("\nClassification Report (validation set):")
-    print(classification_report(
-        all_labels, all_preds,
+    report_str = classification_report(
+        val_true, val_preds,
+        labels=list(range(num_classes)),
         target_names=classes,
         zero_division=0,
-    ))
-    print(f"\nBest val accuracy : {best_val_acc:.4f}")
+    )
+    print("\nClassification Report (validation set):")
+    print(report_str)
+    print(f"Val accuracy : {val_acc:.4f}")
+    print(f"Val F1       : {val_f1:.4f}")
 
-    # ── Save predictions DataFrame ────────────────────────────────────────────
+    # ── Save classification report ───────────────────────────────────────────
+    report_path = output_dir / "classification_report.txt"
+    with open(report_path, "w") as f:
+        f.write(f"Classifier       : abmil\n")
+        f.write(f"Embeddings       : {args.embeddings}\n")
+        f.write(f"Subtract control : {args.subtract_control}\n\n")
+        f.write(report_str)
+        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
+        f.write(f"Val F1       : {val_f1:.4f}\n")
+    print(f"Report saved to    : {report_path}")
+
+    # ── Confusion matrix ─────────────────────────────────────────────────────
+    cm = confusion_matrix(val_true, val_preds, labels=list(range(num_classes)))
+    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(
+        xticks=range(num_classes),
+        yticks=range(num_classes),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title="Confusion Matrix — Gated ABMIL",
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    thresh = cm.max() / 2.0
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax.text(j, i, str(cm[i, j]),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black",
+                    fontsize=7)
+    fig.tight_layout()
+    fig.savefig(output_dir / "confusion_matrix.png", dpi=150)
+    plt.close(fig)
+    print(f"Confusion matrix   : {output_dir / 'confusion_matrix.png'}")
+
+    # ── Save predictions ─────────────────────────────────────────────────────
     if args.save_predictions:
         pred_rows = {
-            "compound_id":      all_cids,
-            "true_label":       [classes[i] for i in all_labels],
-            "predicted_label":  [classes[i] for i in all_preds],
-            "correct":          [t == p for t, p in zip(all_labels, all_preds)],
+            "compound_id":     val_cids,
+            "true_label":      [classes[i] for i in val_true],
+            "predicted_label": [classes[i] for i in val_preds],
+            "correct":         [t == p for t, p in zip(val_true, val_preds)],
         }
-        # Add one probability column per class
-        prob_array = np.array(all_probs)   # (N, num_classes)
         for cls_idx, cls_name in enumerate(classes):
-            pred_rows[f"prob_{cls_name}"] = prob_array[:, cls_idx].tolist()
+            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
 
         pred_df = pd.DataFrame(pred_rows)
         pred_path = output_dir / "predictions.csv"
