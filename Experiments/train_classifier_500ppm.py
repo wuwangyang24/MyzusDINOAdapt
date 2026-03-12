@@ -224,7 +224,7 @@ def train_abmil(
     optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    for epoch in range(args.abmil_epochs):
+    for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
         model.train()
         indices = np.random.permutation(len(bags))
         epoch_loss = 0.0
@@ -237,8 +237,6 @@ def train_abmil(
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={epoch_loss/len(bags):.4f}")
 
     print("Training done.\n")
     return model
