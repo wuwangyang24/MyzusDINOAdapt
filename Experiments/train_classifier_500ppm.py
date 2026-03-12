@@ -557,10 +557,6 @@ def main() -> None:
             learning_rate=args.xgb_learning_rate,
             subsample=args.xgb_subsample,
             colsample_bytree=args.xgb_colsample_bytree,
-            min_child_weight=args.xgb_min_child_weight,
-            gamma=args.xgb_gamma,
-            reg_alpha=args.xgb_reg_alpha,
-            reg_lambda=args.xgb_reg_lambda,
         )
 
         # ── Optional hyperparameter tuning ───────────────────────────────
@@ -636,9 +632,10 @@ def main() -> None:
             use_label_encoder=False,
             random_state=args.seed,
             n_jobs=-1,
+            early_stopping_rounds=args.xgb_early_stopping,
         )
         print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
-        clf.fit(X_train, y_train, verbose=False)
+        clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
         print("Training done.\n")
 
         # ── Inference features ───────────────────────────────────────────
