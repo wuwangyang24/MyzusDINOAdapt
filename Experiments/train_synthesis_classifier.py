@@ -353,6 +353,94 @@ def save_label_encoder(classes: List[str], str2idx: Dict[str, int], path: Path) 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 4b. Result saving helper
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_results(
+    val_true: np.ndarray,
+    val_preds: np.ndarray,
+    val_probs: np.ndarray,
+    val_cids: List[str],
+    classes: List[str],
+    num_classes: int,
+    output_dir: Path,
+    cm_title: str,
+    file_suffix: str,
+    report_header: str,
+    save_predictions: bool,
+) -> None:
+    """Save classification report, confusion matrix, and (optionally) predictions CSV."""
+    val_acc = balanced_accuracy_score(val_true, val_preds)
+    val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
+
+    report_str = classification_report(
+        val_true, val_preds,
+        labels=list(range(num_classes)),
+        target_names=classes,
+        zero_division=0,
+    )
+    print("\nClassification Report (validation set):")
+    print(report_str)
+    print(f"Val accuracy : {val_acc:.4f}")
+    print(f"Val F1       : {val_f1:.4f}")
+
+    # ── Classification report text file ──────────────────────────────────────
+    report_path = output_dir / f"classification_report{file_suffix}.txt"
+    with open(report_path, "w") as f:
+        f.write(report_header)
+        f.write(report_str)
+        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
+        f.write(f"Val F1       : {val_f1:.4f}\n")
+    print(f"Report saved to    : {report_path}")
+
+    # ── Confusion matrix ─────────────────────────────────────────────────────
+    cm = confusion_matrix(val_true, val_preds, labels=list(range(num_classes)))
+    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(
+        xticks=range(num_classes),
+        yticks=range(num_classes),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title=cm_title,
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    thresh = cm.max() / 2.0
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax.text(j, i, str(cm[i, j]),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black",
+                    fontsize=7)
+    fig.tight_layout()
+    cm_path = output_dir / f"confusion_matrix{file_suffix}.png"
+    fig.savefig(cm_path, dpi=150)
+    plt.close(fig)
+    print(f"Confusion matrix   : {cm_path}")
+
+    # ── Predictions CSV ──────────────────────────────────────────────────────
+    if save_predictions:
+        pred_rows = {
+            "compound_id":     val_cids,
+            "true_label":      [classes[i] for i in val_true],
+            "predicted_label": [classes[i] for i in val_preds],
+            "correct":         [t == p for t, p in zip(val_true, val_preds)],
+        }
+        for cls_idx, cls_name in enumerate(classes):
+            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
+
+        pred_df = pd.DataFrame(pred_rows)
+        pred_path = output_dir / f"predictions{file_suffix}.csv"
+        pred_df.to_csv(pred_path, index=False)
+        print(f"Predictions saved to: {pred_path}")
+
+    print(f"Outputs saved to   : {output_dir}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 5.  CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -424,6 +512,79 @@ def parse_args() -> argparse.Namespace:
                    help="[XGBoost] Early stopping rounds. Default: 20")
 
     return p.parse_args()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5b. Gated ABMIL training pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _run_abmil(
+    args: argparse.Namespace,
+    embeddings: Dict,
+    df: pd.DataFrame,
+    str2idx: Dict[str, int],
+    classes: List[str],
+    num_classes: int,
+    output_dir: Path,
+    device: torch.device,
+) -> None:
+    """Train a Gated ABMIL classifier on per-compound bags of embeddings."""
+    bags, labels, cids = build_mil_bags(
+        embeddings,
+        compound_col=df[args.compound_col],
+        label_col=df[args.label_col],
+        label2idx=str2idx,
+        subtract_control=args.subtract_control,
+    )
+    print(f"  {len(bags)} compounds with valid bags, feature dim {bags[0].shape[1]}.")
+
+    if len(bags) == 0:
+        raise RuntimeError(
+            "Dataset is empty. Check that compound IDs in the embeddings file "
+            "match the compound IDs in the metadata."
+        )
+
+    # ── Train / val split ───────────────────────────────────────────────────
+    n_total = len(bags)
+    n_val = max(1, int(n_total * args.val_split))
+    n_train = n_total - n_val
+    indices = np.random.permutation(n_total)
+    train_idx, val_idx = indices[:n_train], indices[n_train:]
+
+    train_bags   = [bags[i] for i in train_idx]
+    train_labels = [labels[i] for i in train_idx]
+    val_bags     = [bags[i] for i in val_idx]
+    val_labels   = [labels[i] for i in val_idx]
+    val_cids     = [cids[i] for i in val_idx]
+    print(f"  Train: {n_train}  |  Val: {n_val}")
+
+    # ── Train model ─────────────────────────────────────────────────────────
+    model = train_abmil(train_bags, train_labels, num_classes, args, device)
+
+    # ── Save model ──────────────────────────────────────────────────────────
+    torch.save(model.state_dict(), output_dir / "best_model.pt")
+
+    # ── Evaluate on validation set & save results ────────────────────────────
+    val_preds, val_probs = infer_abmil(model, val_bags, device)
+    val_true = np.array(val_labels)
+
+    save_results(
+        val_true=val_true,
+        val_preds=val_preds,
+        val_probs=val_probs,
+        val_cids=val_cids,
+        classes=classes,
+        num_classes=num_classes,
+        output_dir=output_dir,
+        cm_title="Confusion Matrix — Gated ABMIL",
+        file_suffix="",
+        report_header=(
+            f"Classifier       : abmil\n"
+            f"Embeddings       : {args.embeddings}\n"
+            f"Subtract control : {args.subtract_control}\n\n"
+        ),
+        save_predictions=args.save_predictions,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -531,84 +692,34 @@ def _run_xgboost(
         verbose=True,
     )
 
-    # ── Evaluation ───────────────────────────────────────────────────────────
+    # ── Evaluation & save results ─────────────────────────────────────────────
     val_preds = clf.predict(X_val)
-    val_acc = balanced_accuracy_score(y_val, val_preds)
-    val_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
+    val_probs = clf.predict_proba(X_val)  # (N, num_classes)
 
-    print("\nClassification Report (validation set):")
-    report_str = classification_report(
-        y_val, val_preds,
-        labels=list(range(num_classes)),
-        target_names=classes,
-        zero_division=0,
-    )
-    print(report_str)
-    print(f"Val accuracy : {val_acc:.4f}")
-    print(f"Val F1       : {val_f1:.4f}")
-
-    # ── Save classification report ───────────────────────────────────────────
     _input_path = args.efficacy if args.efficacy else args.embeddings
     emb_stem = Path(_input_path).stem              # e.g. "embeddings_tiltedvae_dim100"
-    report_path = output_dir / f"classification_report_{emb_stem}.txt"
-    with open(report_path, "w") as f:
-        f.write(f"Input file       : {_input_path}\n")
-        f.write(f"Subtract control : {args.subtract_control}\n\n")
-        f.write(report_str)
-        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
-        f.write(f"Val F1       : {val_f1:.4f}\n")
-    print(f"Report saved to    : {report_path}")
 
-    # ── Confusion matrix ─────────────────────────────────────────────────────
-    cm = confusion_matrix(y_val, val_preds, labels=list(range(num_classes)))
-    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
-    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
-    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set(
-        xticks=range(num_classes),
-        yticks=range(num_classes),
-        xticklabels=classes,
-        yticklabels=classes,
-        ylabel="True label",
-        xlabel="Predicted label",
-        title=f"Confusion Matrix — {emb_stem}",
+    save_results(
+        val_true=y_val,
+        val_preds=val_preds,
+        val_probs=val_probs,
+        val_cids=cids_val,
+        classes=classes,
+        num_classes=num_classes,
+        output_dir=output_dir,
+        cm_title=f"Confusion Matrix — {emb_stem}",
+        file_suffix=f"_{emb_stem}",
+        report_header=(
+            f"Input file       : {_input_path}\n"
+            f"Subtract control : {args.subtract_control}\n\n"
+        ),
+        save_predictions=args.save_predictions,
     )
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    # Annotate cells
-    thresh = cm.max() / 2.0
-    for i in range(num_classes):
-        for j in range(num_classes):
-            ax.text(j, i, str(cm[i, j]),
-                    ha="center", va="center",
-                    color="white" if cm[i, j] > thresh else "black",
-                    fontsize=7)
-    fig.tight_layout()
-    cm_path = output_dir / f"confusion_matrix_{emb_stem}.png"
-    fig.savefig(cm_path, dpi=150)
-    plt.close(fig)
-    print(f"Confusion matrix   : {cm_path}")
 
     # ── Save model ───────────────────────────────────────────────────────────
     model_path = output_dir / f"xgboost_model_{emb_stem}.json"
     clf.save_model(str(model_path))
     print(f"Model saved to     : {model_path}")
-
-    # ── Save predictions ─────────────────────────────────────────────────────
-    if args.save_predictions:
-        val_probs = clf.predict_proba(X_val)  # (N, num_classes)
-        pred_rows = {
-            "compound_id":     cids_val,
-            "true_label":      [classes[i] for i in y_val],
-            "predicted_label": [classes[i] for i in val_preds],
-            "correct":         [t == p for t, p in zip(y_val, val_preds)],
-        }
-        for cls_idx, cls_name in enumerate(classes):
-            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
-
-        pred_df = pd.DataFrame(pred_rows)
-        pred_path = output_dir / "predictions.csv"
-        pred_df.to_csv(pred_path, index=False)
-        print(f"Predictions saved to: {pred_path}")
 
     # ── Training log (evals_result) ──────────────────────────────────────────
     evals = clf.evals_result()
@@ -620,8 +731,6 @@ def _run_xgboost(
             f"val_{metric_key}": evals["validation_1"][metric_key],
         })
         log_df.to_csv(output_dir / f"training_log_{emb_stem}.csv", index=False)
-
-    print(f"Outputs saved to   : {output_dir}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -701,122 +810,19 @@ def main() -> None:
             output_dir=output_dir,
             efficacy=efficacy,
         )
-        return
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Gated ABMIL path
-    # ══════════════════════════════════════════════════════════════════════════
-    if embeddings is None:
-        raise ValueError("Gated ABMIL requires --embeddings (not --efficacy).")
-
-    bags, labels, cids = build_mil_bags(
-        embeddings,
-        compound_col=df[args.compound_col],
-        label_col=df[args.label_col],
-        label2idx=str2idx,
-        subtract_control=args.subtract_control,
-    )
-    print(f"  {len(bags)} compounds with valid bags, feature dim {bags[0].shape[1]}.")
-
-    if len(bags) == 0:
-        raise RuntimeError(
-            "Dataset is empty. Check that compound IDs in the embeddings file "
-            "match the compound IDs in the metadata."
+    else:
+        if embeddings is None:
+            raise ValueError("Gated ABMIL requires --embeddings (not --efficacy).")
+        _run_abmil(
+            args=args,
+            embeddings=embeddings,
+            df=df,
+            str2idx=str2idx,
+            classes=classes,
+            num_classes=num_classes,
+            output_dir=output_dir,
+            device=device,
         )
-
-    # ── Train / val split ─────────────────────────────────────────────────────
-    n_total = len(bags)
-    n_val = max(1, int(n_total * args.val_split))
-    n_train = n_total - n_val
-    indices = np.random.permutation(n_total)
-    train_idx, val_idx = indices[:n_train], indices[n_train:]
-
-    train_bags   = [bags[i] for i in train_idx]
-    train_labels = [labels[i] for i in train_idx]
-    val_bags     = [bags[i] for i in val_idx]
-    val_labels   = [labels[i] for i in val_idx]
-    val_cids     = [cids[i] for i in val_idx]
-    print(f"  Train: {n_train}  |  Val: {n_val}")
-
-    # ── Train model ───────────────────────────────────────────────────────────
-    model = train_abmil(train_bags, train_labels, num_classes, args, device)
-
-    # ── Save model ────────────────────────────────────────────────────────────
-    torch.save(model.state_dict(), output_dir / "best_model.pt")
-
-    # ── Evaluate on validation set ────────────────────────────────────────────
-    val_preds, val_probs = infer_abmil(model, val_bags, device)
-    val_true = np.array(val_labels)
-
-    val_acc = balanced_accuracy_score(val_true, val_preds)
-    val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
-
-    report_str = classification_report(
-        val_true, val_preds,
-        labels=list(range(num_classes)),
-        target_names=classes,
-        zero_division=0,
-    )
-    print("\nClassification Report (validation set):")
-    print(report_str)
-    print(f"Val accuracy : {val_acc:.4f}")
-    print(f"Val F1       : {val_f1:.4f}")
-
-    # ── Save classification report ───────────────────────────────────────────
-    report_path = output_dir / "classification_report.txt"
-    with open(report_path, "w") as f:
-        f.write(f"Classifier       : abmil\n")
-        f.write(f"Embeddings       : {args.embeddings}\n")
-        f.write(f"Subtract control : {args.subtract_control}\n\n")
-        f.write(report_str)
-        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
-        f.write(f"Val F1       : {val_f1:.4f}\n")
-    print(f"Report saved to    : {report_path}")
-
-    # ── Confusion matrix ─────────────────────────────────────────────────────
-    cm = confusion_matrix(val_true, val_preds, labels=list(range(num_classes)))
-    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
-    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
-    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set(
-        xticks=range(num_classes),
-        yticks=range(num_classes),
-        xticklabels=classes,
-        yticklabels=classes,
-        ylabel="True label",
-        xlabel="Predicted label",
-        title="Confusion Matrix — Gated ABMIL",
-    )
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    thresh = cm.max() / 2.0
-    for i in range(num_classes):
-        for j in range(num_classes):
-            ax.text(j, i, str(cm[i, j]),
-                    ha="center", va="center",
-                    color="white" if cm[i, j] > thresh else "black",
-                    fontsize=7)
-    fig.tight_layout()
-    fig.savefig(output_dir / "confusion_matrix.png", dpi=150)
-    plt.close(fig)
-    print(f"Confusion matrix   : {output_dir / 'confusion_matrix.png'}")
-
-    # ── Save predictions ─────────────────────────────────────────────────────
-    if args.save_predictions:
-        pred_rows = {
-            "compound_id":     val_cids,
-            "true_label":      [classes[i] for i in val_true],
-            "predicted_label": [classes[i] for i in val_preds],
-            "correct":         [t == p for t, p in zip(val_true, val_preds)],
-        }
-        for cls_idx, cls_name in enumerate(classes):
-            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
-
-        pred_df = pd.DataFrame(pred_rows)
-        pred_path = output_dir / "predictions.csv"
-        pred_df.to_csv(pred_path, index=False)
-        print(f"Predictions saved to: {pred_path}")
-
-    print(f"Outputs saved to  : {output_dir}")
 
 
 if __name__ == "__main__":
