@@ -463,7 +463,7 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    output_dir = Path(args.output_dir) / args.model_name
+    output_dir = Path(args.output_dir) / args.model_name / args.classifier
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load data ────────────────────────────────────────────────────────────
