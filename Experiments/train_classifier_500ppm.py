@@ -633,14 +633,12 @@ def main() -> None:
         clf = xgb.XGBClassifier(
             **xgb_params,
             objective="binary:logistic",
-            eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
             n_jobs=-1,
-            early_stopping_rounds=args.xgb_early_stopping,
         )
         print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
-        clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
+        clf.fit(X_train, y_train, verbose=False)
         print("Training done.\n")
 
         # ── Inference features ───────────────────────────────────────────
