@@ -119,6 +119,7 @@ class GatedABMIL(nn.Module):
 
     def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.25):
         super().__init__()
+        self.instance_norm = nn.LayerNorm(input_dim)
         self.attention_V = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.Tanh(),
@@ -132,7 +133,10 @@ class GatedABMIL(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1)
         )
 
     def forward(self, bag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -147,6 +151,7 @@ class GatedABMIL(nn.Module):
         logit  : (1,) raw logit
         att    : (N_instances,) attention weights
         """
+        bag = self.instance_norm(bag)  # normalize instances
         V = self.attention_V(bag)  # (N, H)
         U = self.attention_U(bag)  # (N, H)
         att_logits = self.attention_w(V * U)  # (N, 1)
@@ -214,15 +219,20 @@ def train_abmil(
         n_pos = int(all_labels.sum())
         n_neg = len(all_labels) - n_pos
         if n_pos > 0:
-            pos_weight = torch.tensor([n_neg / n_pos], device=device)
+            pos_weight = torch.tensor(n_neg / n_pos, device=device)
             print(f"  ABMIL pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
 
     # ── Train model on all data ──────────────────────────────────────────
     print(f"\nTraining ABMIL on all {len(bags)} training compounds ...")
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.abmil_epochs, eta_min=1e-6)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    best_loss = float("inf")
+    patience_counter = 0
+    best_state = None
 
     for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
         model.train()
@@ -230,16 +240,39 @@ def train_abmil(
         epoch_loss = 0.0
         for i in indices:
             bag = bags[i].to(device)
+            # Instance-level dropout augmentation during training
+            if bag.shape[0] > 4 and args.abmil_instance_dropout > 0:
+                keep_mask = torch.rand(bag.shape[0], device=device) > args.abmil_instance_dropout
+                if keep_mask.sum() > 1:
+                    bag = bag[keep_mask]
             label = torch.tensor(float(labels[i]), device=device)
             optimizer.zero_grad()
             logit, _ = model(bag)
             loss = criterion(logit, label)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             epoch_loss += loss.item()
-        if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={epoch_loss/len(bags):.4f}")
+        scheduler.step()
+        avg_loss = epoch_loss / len(bags)
 
+        # Early stopping on training loss
+        if avg_loss < best_loss - 1e-4:
+            best_loss = avg_loss
+            patience_counter = 0
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            patience_counter += 1
+
+        if (epoch + 1) % 50 == 0 or epoch == 0:
+            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={scheduler.get_last_lr()[0]:.2e}")
+
+        if patience_counter >= args.abmil_patience:
+            print(f"  Early stopping at epoch {epoch+1} (patience={args.abmil_patience})")
+            break
+
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
     print("Training done.\n")
     return model
 
@@ -394,11 +427,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--xgb_early_stopping", type=int, default=20, help="XGBoost early stopping (default: 20)")
 
     # ── ABMIL hyper-parameters ──
-    p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 128)")
-    p.add_argument("--abmil_dropout", type=float, default=0.1, help="ABMIL dropout (default: 0.25)")
-    p.add_argument("--abmil_lr", type=float, default=1e-3, help="ABMIL learning rate (default: 1e-3)")
-    p.add_argument("--abmil_wd", type=float, default=1e-4, help="ABMIL weight decay (default: 1e-4)")
-    p.add_argument("--abmil_epochs", type=int, default=200, help="ABMIL training epochs (default: 200)")
+    p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 256)")
+    p.add_argument("--abmil_dropout", type=float, default=0.25, help="ABMIL dropout (default: 0.25)")
+    p.add_argument("--abmil_lr", type=float, default=2e-4, help="ABMIL learning rate (default: 2e-4)")
+    p.add_argument("--abmil_wd", type=float, default=1e-3, help="ABMIL weight decay (default: 1e-3)")
+    p.add_argument("--abmil_epochs", type=int, default=500, help="ABMIL training epochs (default: 500)")
+    p.add_argument("--abmil_patience", type=int, default=80, help="ABMIL early stopping patience (default: 80)")
+    p.add_argument("--abmil_instance_dropout", type=float, default=0.1, help="Randomly drop this fraction of instances per bag during training (default: 0.1)")
 
     # ── Misc ──
     p.add_argument(
