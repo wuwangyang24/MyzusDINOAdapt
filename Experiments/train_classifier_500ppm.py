@@ -428,11 +428,11 @@ def parse_args() -> argparse.Namespace:
 
     # ── ABMIL hyper-parameters ──
     p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 256)")
-    p.add_argument("--abmil_dropout", type=float, default=0.25, help="ABMIL dropout (default: 0.25)")
+    p.add_argument("--abmil_dropout", type=float, default=0.1, help="ABMIL dropout (default: 0.25)")
     p.add_argument("--abmil_lr", type=float, default=2e-4, help="ABMIL learning rate (default: 2e-4)")
-    p.add_argument("--abmil_wd", type=float, default=1e-3, help="ABMIL weight decay (default: 1e-3)")
+    p.add_argument("--abmil_wd", type=float, default=1e-4, help="ABMIL weight decay (default: 1e-3)")
     p.add_argument("--abmil_epochs", type=int, default=500, help="ABMIL training epochs (default: 500)")
-    p.add_argument("--abmil_patience", type=int, default=80, help="ABMIL early stopping patience (default: 80)")
+    p.add_argument("--abmil_patience", type=int, default=50, help="ABMIL early stopping patience (default: 80)")
     p.add_argument("--abmil_instance_dropout", type=float, default=0.1, help="Randomly drop this fraction of instances per bag during training (default: 0.1)")
 
     # ── Misc ──
