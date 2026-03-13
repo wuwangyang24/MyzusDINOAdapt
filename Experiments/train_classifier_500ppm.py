@@ -208,10 +208,14 @@ def train_abmil(
     labels: List[int],
     args: argparse.Namespace,
     device: torch.device,
+    eval_bags: List[torch.Tensor] | None = None,
+    eval_labels: np.ndarray | None = None,
+    output_dir: Path | None = None,
 ) -> GatedABMIL:
     """Train Gated ABMIL, return model trained on all data."""
     input_dim = bags[0].shape[1]
     all_labels = np.array(labels)
+    has_eval = eval_bags is not None and eval_labels is not None
 
     # ── Compute pos_weight for class balancing ───────────────────────────
     pos_weight = None
@@ -227,12 +231,17 @@ def train_abmil(
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.abmil_epochs, eta_min=1e-6)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=15, min_lr=1e-6,
+    )
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    best_loss = float("inf")
+    best_auroc = -1.0
     patience_counter = 0
     best_state = None
+    ckpt_dir = output_dir / "checkpoints" if output_dir is not None else None
+    if ckpt_dir is not None:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
         model.train()
@@ -253,19 +262,48 @@ def train_abmil(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             epoch_loss += loss.item()
-        scheduler.step()
         avg_loss = epoch_loss / len(bags)
+        cur_lr = optimizer.param_groups[0]["lr"]
 
-        # Early stopping on training loss
-        if avg_loss < best_loss - 1e-4:
-            best_loss = avg_loss
-            patience_counter = 0
-            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        else:
-            patience_counter += 1
+        # ── Periodic evaluation on test set ──────────────────────────────
+        eval_auroc = None
+        if has_eval and (epoch + 1) % args.abmil_eval_every == 0:
+            preds, probas = infer_abmil(model, eval_bags, device)
+            eval_auroc = roc_auc_score(eval_labels, probas)
+            eval_f1 = f1_score(eval_labels, preds, average="weighted", zero_division=0)
+            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  eval_AUROC={eval_auroc:.4f}  eval_F1={eval_f1:.4f}")
 
-        if (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={scheduler.get_last_lr()[0]:.2e}")
+            # Step scheduler based on eval AUROC
+            scheduler.step(eval_auroc)
+
+            # Save checkpoint if best
+            if eval_auroc > best_auroc:
+                best_auroc = eval_auroc
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                if ckpt_dir is not None:
+                    torch.save({
+                        "epoch": epoch + 1,
+                        "model_state_dict": best_state,
+                        "auroc": eval_auroc,
+                        "f1": eval_f1,
+                        "loss": avg_loss,
+                    }, ckpt_dir / "best_model.pt")
+                    print(f"    ✓ Saved best checkpoint (AUROC={eval_auroc:.4f})")
+            else:
+                patience_counter += 1
+        elif (epoch + 1) % 50 == 0 or epoch == 0:
+            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}")
+
+        # Fallback: if no eval data, track training loss
+        if not has_eval:
+            if avg_loss < (best_auroc if best_auroc > 0 else float("inf")) - 1e-4:
+                best_auroc = avg_loss  # reuse variable as best_loss
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                patience_counter += 1
+            scheduler.step(-avg_loss)  # negate since scheduler mode="max"
 
         if patience_counter >= args.abmil_patience:
             print(f"  Early stopping at epoch {epoch+1} (patience={args.abmil_patience})")
@@ -273,6 +311,8 @@ def train_abmil(
 
     if best_state is not None:
         model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+        if has_eval:
+            print(f"Restored best model (eval AUROC={best_auroc:.4f})")
     print("Training done.\n")
     return model
 
@@ -434,6 +474,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--abmil_epochs", type=int, default=500, help="ABMIL training epochs (default: 500)")
     p.add_argument("--abmil_patience", type=int, default=50, help="ABMIL early stopping patience (default: 80)")
     p.add_argument("--abmil_instance_dropout", type=float, default=0.1, help="Randomly drop this fraction of instances per bag during training (default: 0.1)")
+    p.add_argument("--abmil_eval_every", type=int, default=10, help="Evaluate on test set every N epochs (default: 10)")
 
     # ── Misc ──
     p.add_argument(
@@ -505,6 +546,7 @@ def main() -> None:
     if args.classifier == "abmil":
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_abmil(
             embeddings, cid2label, inf_embeddings, inf_cid2label, args, device,
+            output_dir=output_dir,
         )
     else:
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_xgboost(
@@ -530,6 +572,7 @@ def _run_abmil(
     inf_cid2label: Dict[str, int],
     args: argparse.Namespace,
     device: torch.device,
+    output_dir: Path | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
     """Train ABMIL, run inference, return (preds, proba, y_true, cids, label)."""
     train_bags, train_labels, _ = build_mil_bags(
@@ -539,8 +582,7 @@ def _run_abmil(
     if len(train_bags) == 0:
         raise RuntimeError("No compounds matched between embeddings and efficacy.")
 
-    model = train_abmil(train_bags, train_labels, args, device)
-
+    # Build inference bags before training so we can evaluate during training
     inf_bags, inf_labels, cids_inf = build_mil_bags(
         inf_embeddings, inf_cid2label, args.subtract_control,
     )
@@ -548,6 +590,11 @@ def _run_abmil(
     print(f"  {len(inf_bags)} inference compounds (bags).")
     if len(inf_bags) == 0:
         raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
+    model = train_abmil(
+        train_bags, train_labels, args, device,
+        eval_bags=inf_bags, eval_labels=y_inf, output_dir=output_dir,
+    )
 
     inf_preds, inf_proba = infer_abmil(model, inf_bags, device)
     return inf_preds, inf_proba, y_inf, cids_inf, "ABMIL"
