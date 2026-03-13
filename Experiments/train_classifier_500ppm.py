@@ -231,9 +231,7 @@ def train_abmil(
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=15, min_lr=1e-6,
-    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.abmil_epochs, eta_min=1e-6)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
     best_auroc = -1.0
@@ -263,6 +261,7 @@ def train_abmil(
             optimizer.step()
             epoch_loss += loss.item()
         avg_loss = epoch_loss / len(bags)
+        scheduler.step()
         cur_lr = optimizer.param_groups[0]["lr"]
 
         # ── Periodic evaluation on test set ──────────────────────────────
@@ -272,9 +271,6 @@ def train_abmil(
             eval_auroc = roc_auc_score(eval_labels, probas)
             eval_f1 = f1_score(eval_labels, preds, average="weighted", zero_division=0)
             print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  eval_AUROC={eval_auroc:.4f}  eval_F1={eval_f1:.4f}")
-
-            # Step scheduler based on eval AUROC
-            scheduler.step(eval_auroc)
 
             # Save checkpoint if best
             if eval_auroc > best_auroc:
@@ -303,7 +299,6 @@ def train_abmil(
                 best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             else:
                 patience_counter += 1
-            scheduler.step(-avg_loss)  # negate since scheduler mode="max"
 
         if patience_counter >= args.abmil_patience:
             print(f"  Early stopping at epoch {epoch+1} (patience={args.abmil_patience})")
