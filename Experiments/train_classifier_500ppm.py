@@ -36,6 +36,16 @@ Usage
       --inference_embeddings Experiments/embeddings_100ppm.pt \\
       --inference_efficacy   Experiments/efficacy_500ppm.csv
 
+  # Gated ABMIL with hyperparameter tuning
+  python Experiments/train_classifier_500ppm.py \\
+      --classifier abmil --tune \\
+      --abmil_tune_iter 50 \\
+      --abmil_tune_epochs 50 \\
+      --embeddings           Experiments/embeddings_20ppm.pt \\
+      --efficacy             Experiments/efficacy.pt \\
+      --inference_embeddings Experiments/embeddings_100ppm.pt \\
+      --inference_efficacy   Experiments/efficacy_500ppm.csv
+
 Output
 ------
   <output_dir>/
