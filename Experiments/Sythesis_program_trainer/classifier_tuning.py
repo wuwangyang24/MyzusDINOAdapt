@@ -125,12 +125,12 @@ def _tune_catboost(
 ) -> Dict:
     """Random search over CatBoost hyperparameters, return best config."""
     param_space = {
-        "iterations": [300, 500, 1000],
-        "depth": [3, 4, 5, 6, 8],
-        "learning_rate": [0.01, 0.03, 0.05, 0.1],
-        "l2_leaf_reg": [1.0, 3.0, 5.0, 10.0, 20.0],
-        "auto_class_weights": ["None", "Balanced", "SqrtBalanced"],
-        "random_strength": [0.5, 1.0, 2.0, 4.0],
+        "iterations": [100],
+        "depth": [3, 6, 9],
+        "learning_rate": [0.01, 0.05, 0.1],
+        "l2_leaf_reg": [1.0, 5.0, 10.0, 20.0],
+        "auto_class_weights": ["Balanced", "SqrtBalanced"],
+        "random_strength": [0.5, 1.0, 2.0],
         "bagging_temperature": [0.0, 0.5, 1.0, 2.0],
     }
 
