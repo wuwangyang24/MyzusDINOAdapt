@@ -132,8 +132,8 @@ def _tune_catboost(
         "learning_rate": [0.01, 0.05, 0.1],
         "l2_leaf_reg": [1.0, 5.0, 10.0, 20.0],
         "auto_class_weights": ["Balanced", "SqrtBalanced"],
-        "random_strength": [0.5, 1.0, 2.0],
-        "bagging_temperature": [0.0, 0.5, 1.0, 2.0],
+        # "random_strength": [0.5, 1.0, 2.0],
+        # "bagging_temperature": [0.0, 0.5, 1.0, 2.0],
     }
 
     rng = np.random.RandomState(args.seed)
@@ -156,8 +156,6 @@ def _tune_catboost(
             depth=int(config["depth"]),
             learning_rate=float(config["learning_rate"]),
             l2_leaf_reg=float(config["l2_leaf_reg"]),
-            random_strength=float(config["random_strength"]),
-            bagging_temperature=float(config["bagging_temperature"]),
             auto_class_weights=auto_cw,
             loss_function=loss_fn,
             eval_metric=eval_metric,
@@ -185,7 +183,6 @@ def _tune_catboost(
         print(f"  Trial {trial+1:3d}/{n_trials}  depth={config['depth']}  "
               f"lr={config['learning_rate']:.3f}  l2={config['l2_leaf_reg']:.1f}  "
               f"cw={config['auto_class_weights']:<12s}  "
-              f"rs={config['random_strength']:.1f}  bt={config['bagging_temperature']:.1f}  "
               f"F1={trial_f1:.4f}  Acc={trial_acc:.4f}{'  ★ BEST' if is_best else ''}")
 
     print(f"\n  Best trial F1: {best_f1:.4f}")
