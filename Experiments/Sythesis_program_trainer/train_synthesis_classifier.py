@@ -327,13 +327,9 @@ def _run_abmil(
     test_cids    = [cids[i] for i in test_idx]
     print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
 
-    # ── Train model on train set (val for monitoring) ────────────────────────
-    model = train_abmil(train_bags, train_labels, num_classes, args, device)
-
-    # ── Retrain on train+val with same config ────────────────────────────────
+    # ── Train on train+val (val only used for final eval split) ──────────────
     trainval_bags   = train_bags + val_bags
     trainval_labels = train_labels + val_labels
-    print(f"\nRetraining ABMIL on train+val ({len(trainval_bags)} compounds) ...")
     model = train_abmil(trainval_bags, trainval_labels, num_classes, args, device)
 
     # ── Save model ──────────────────────────────────────────────────────────
