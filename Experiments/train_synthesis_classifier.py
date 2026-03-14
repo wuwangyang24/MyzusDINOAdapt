@@ -198,12 +198,18 @@ class GatedABMIL(nn.Module):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _l2_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
+    """L2-normalize along *dim*."""
+    return x / (x.norm(dim=dim, keepdim=True) + eps)
+
+
 def build_mil_bags(
     embeddings: Dict,
     compound_col: pd.Series,
     label_col: pd.Series,
     label2idx: Dict[str, int],
     subtract_control: bool = False,
+    normalize_before_subtract: bool = False,
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """Build variable-length bags of instance embeddings per compound."""
     comp2label: Dict[str, int] = {}
@@ -222,6 +228,9 @@ def build_mil_bags(
                 continue
             if subtract_control and "control" in plate_data:
                 control = plate_data["control"]
+                if normalize_before_subtract:
+                    treated = _l2_normalize(treated)
+                    control = _l2_normalize(control)
                 treated = treated - control.unsqueeze(0)
             plate_latents.append(treated.float())
         if not plate_latents:
@@ -297,6 +306,7 @@ def build_mean_latent_features(
     label_col: pd.Series,
     label2idx: Dict[str, int],
     subtract_control: bool = False,
+    normalize_before_subtract: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build a (num_compounds, D) feature matrix where each row is the mean
@@ -326,6 +336,9 @@ def build_mean_latent_features(
                 continue
             if subtract_control and "control" in plate_data:
                 control = plate_data["control"]
+                if normalize_before_subtract:
+                    treated = _l2_normalize(treated)
+                    control = _l2_normalize(control)
                 treated = treated - control.unsqueeze(0)
             plate_latents.append(treated.float())
 
@@ -463,6 +476,8 @@ def parse_args() -> argparse.Namespace:
                    help="Name of the synthesis program column in metadata. Default: synthesis_program")
     p.add_argument("--subtract_control", action="store_true",
                    help="Subtract per-plate averaged control embedding from treated embeddings")
+    p.add_argument("--normalize_before_subtract", action="store_true",
+                   help="L2-normalize treated and control embeddings before subtraction (requires --subtract_control)")
     p.add_argument("--val_split", type=float, default=0.2,
                    help="Fraction of compounds used for validation. Default: 0.2")
 
@@ -535,6 +550,7 @@ def _run_abmil(
         label_col=df[args.label_col],
         label2idx=str2idx,
         subtract_control=args.subtract_control,
+        normalize_before_subtract=args.normalize_before_subtract,
     )
     print(f"  {len(bags)} compounds with valid bags, feature dim {bags[0].shape[1]}.")
 
@@ -581,7 +597,8 @@ def _run_abmil(
         report_header=(
             f"Classifier       : abmil\n"
             f"Embeddings       : {args.embeddings}\n"
-            f"Subtract control : {args.subtract_control}\n\n"
+            f"Subtract control : {args.subtract_control}\n"
+            f"Normalize before subtract : {args.normalize_before_subtract}\n\n"
         ),
         save_predictions=args.save_predictions,
     )
@@ -625,6 +642,7 @@ def _run_xgboost(
             label_col=df[args.label_col],
             label2idx=str2idx,
             subtract_control=args.subtract_control,
+            normalize_before_subtract=args.normalize_before_subtract,
         )
     print(f"  {X.shape[0]} compounds with valid features.")
     print(f"  Feature dim (D) : {X.shape[1]}")
@@ -711,7 +729,8 @@ def _run_xgboost(
         file_suffix=f"_{emb_stem}",
         report_header=(
             f"Input file       : {_input_path}\n"
-            f"Subtract control : {args.subtract_control}\n\n"
+            f"Subtract control : {args.subtract_control}\n"
+            f"Normalize before subtract : {args.normalize_before_subtract}\n\n"
         ),
         save_predictions=args.save_predictions,
     )

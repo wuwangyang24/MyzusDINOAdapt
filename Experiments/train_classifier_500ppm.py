@@ -186,10 +186,16 @@ class MILBagDataset:
         return self.bags[idx], self.labels[idx]
 
 
+def _l2_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
+    """L2-normalize along *dim*."""
+    return x / (x.norm(dim=dim, keepdim=True) + eps)
+
+
 def build_mil_bags(
     embeddings: Dict,
     cid2label: Dict[str, int],
     subtract_control: bool = False,
+    normalize_before_subtract: bool = False,
 ) -> Tuple[List[torch.Tensor], List[int], List[str]]:
     """Build variable-length bags of instance embeddings per compound."""
     bags, labels, cids = [], [], []
@@ -204,6 +210,9 @@ def build_mil_bags(
                 continue
             if subtract_control and "control" in plate_data:
                 control = plate_data["control"]
+                if normalize_before_subtract:
+                    treated = _l2_normalize(treated)
+                    control = _l2_normalize(control)
                 treated = treated - control.unsqueeze(0)
             plate_latents.append(treated.float())
         if not plate_latents:
@@ -376,6 +385,7 @@ def build_mean_latent_features(
     embeddings: Dict,
     cid2label: Dict[str, int],
     subtract_control: bool = False,
+    normalize_before_subtract: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Build (N, D) feature matrix from per-compound mean latents.
@@ -400,6 +410,9 @@ def build_mean_latent_features(
                 continue
             if subtract_control and "control" in plate_data:
                 control = plate_data["control"]
+                if normalize_before_subtract:
+                    treated = _l2_normalize(treated)
+                    control = _l2_normalize(control)
                 treated = treated - control.unsqueeze(0)
             plate_latents.append(treated.float())
 
@@ -449,6 +462,11 @@ def parse_args() -> argparse.Namespace:
         "--subtract_control",
         action="store_true",
         help="Subtract per-plate averaged control embedding from treated embeddings",
+    )
+    p.add_argument(
+        "--normalize_before_subtract",
+        action="store_true",
+        help="L2-normalize treated and control embeddings before subtraction (requires --subtract_control)",
     )
     p.add_argument(
         "--balance",
@@ -611,7 +629,7 @@ def _run_abmil(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
     """Train ABMIL, run inference, return (preds, proba, y_true, cids, label)."""
     train_bags, train_labels, _ = build_mil_bags(
-        embeddings, cid2label, args.subtract_control,
+        embeddings, cid2label, args.subtract_control, args.normalize_before_subtract,
     )
     print(f"  {len(train_bags)} training compounds (bags), feature dim {train_bags[0].shape[1]}.")
     if len(train_bags) == 0:
@@ -619,7 +637,7 @@ def _run_abmil(
 
     # Build inference bags before training so we can evaluate during training
     inf_bags, inf_labels, cids_inf = build_mil_bags(
-        inf_embeddings, inf_cid2label, args.subtract_control,
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
     )
     y_inf = np.array(inf_labels)
     print(f"  {len(inf_bags)} inference compounds (bags).")
@@ -730,7 +748,7 @@ def _run_xgboost(
     """Train XGBoost, run inference, return (preds, proba, y_true, cids, label)."""
     # ── Build training features ──────────────────────────────────────────
     X_train, y_train, _ = build_mean_latent_features(
-        embeddings, cid2label, args.subtract_control,
+        embeddings, cid2label, args.subtract_control, args.normalize_before_subtract,
     )
     print(f"  {X_train.shape[0]} training compounds, feature dim {X_train.shape[1]}.")
 
@@ -849,7 +867,7 @@ def _run_xgboost(
 
     # ── Inference features ───────────────────────────────────────────────
     X_inf, y_inf, cids_inf = build_mean_latent_features(
-        inf_embeddings, inf_cid2label, args.subtract_control,
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
     )
     print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
     if X_inf.shape[0] == 0:
