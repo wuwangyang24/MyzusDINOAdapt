@@ -97,6 +97,8 @@ def _tune_xgboost(
 
         print(f"  Trial {trial+1:3d}/{n_trials}  depth={config['max_depth']}  "
               f"lr={config['learning_rate']:.3f}  subsample={config['subsample']:.1f}  "
+              f"colsample={config['colsample_bytree']:.1f}  mcw={config['min_child_weight']}  "
+              f"gamma={config['gamma']:.1f}  lambda={config['reg_lambda']:.1f}  "
               f"F1={trial_f1:.4f}  Acc={trial_acc:.4f}{'  ★ BEST' if is_best else ''}")
 
     print(f"\n  Best trial F1: {best_f1:.4f}")
@@ -183,6 +185,7 @@ def _tune_catboost(
         print(f"  Trial {trial+1:3d}/{n_trials}  depth={config['depth']}  "
               f"lr={config['learning_rate']:.3f}  l2={config['l2_leaf_reg']:.1f}  "
               f"cw={config['auto_class_weights']:<12s}  "
+              f"rs={config['random_strength']:.1f}  bt={config['bagging_temperature']:.1f}  "
               f"F1={trial_f1:.4f}  Acc={trial_acc:.4f}{'  ★ BEST' if is_best else ''}")
 
     print(f"\n  Best trial F1: {best_f1:.4f}")
