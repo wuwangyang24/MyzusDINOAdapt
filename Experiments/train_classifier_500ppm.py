@@ -686,7 +686,7 @@ def _tune_abmil(
         trial_args.abmil_patience = 5  # aggressive early stopping for tuning
 
         print(f"  Trial {trial+1}/{n_trials}  hidden={config['hidden']}  dropout={config['dropout']:.2f}  "
-              f"lr={config['lr']:.1e}  wd={config['wd']:.1e}  inst_drop={config['instance_dropout']:.1f}", end="")
+              f"lr={config['lr']:.1e}  wd={config['wd']:.1e}  inst_drop={config['instance_dropout']:.1f}")
 
         torch.manual_seed(args.seed + trial)
         model = train_abmil(
