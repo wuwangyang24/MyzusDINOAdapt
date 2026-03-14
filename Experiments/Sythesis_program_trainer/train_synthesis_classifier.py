@@ -634,7 +634,7 @@ def _run_catboost(
         l2_leaf_reg=args.cb_l2_leaf_reg,
         auto_class_weights=auto_cw,
         loss_function="MultiClass" if num_classes > 2 else "Logloss",
-        eval_metric="TotalF1:average=Weighted" if num_classes > 2 else "F1",
+        eval_metric="TotalF1:average=Macro" if num_classes > 2 else "F1",
         random_seed=args.seed,
         verbose=50,
         early_stopping_rounds=args.cb_early_stopping,

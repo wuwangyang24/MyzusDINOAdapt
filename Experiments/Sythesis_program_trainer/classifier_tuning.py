@@ -139,7 +139,7 @@ def _tune_catboost(
     rng = np.random.RandomState(args.seed)
     n_trials = args.tune_iter
     loss_fn = "MultiClass" if num_classes > 2 else "Logloss"
-    eval_metric = "TotalF1:average=Weighted" if num_classes > 2 else "F1"
+    eval_metric = "TotalF1:average=Macro" if num_classes > 2 else "F1"
 
     print(f"\nCatBoost hyperparameter tuning ({n_trials} trials) ...")
 
