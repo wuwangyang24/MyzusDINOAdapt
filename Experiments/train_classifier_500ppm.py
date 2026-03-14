@@ -46,6 +46,7 @@ Output
 """
 
 import argparse
+import copy
 import sys
 import warnings
 from pathlib import Path
@@ -211,6 +212,7 @@ def train_abmil(
     eval_bags: List[torch.Tensor] | None = None,
     eval_labels: np.ndarray | None = None,
     output_dir: Path | None = None,
+    verbose: bool = True,
 ) -> GatedABMIL:
     """Train Gated ABMIL, return model trained on all data."""
     input_dim = bags[0].shape[1]
@@ -224,10 +226,12 @@ def train_abmil(
         n_neg = len(all_labels) - n_pos
         if n_pos > 0:
             pos_weight = torch.tensor(n_neg / n_pos, device=device)
-            print(f"  ABMIL pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
+            if verbose:
+                print(f"  ABMIL pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
 
     # ── Train model on all data ──────────────────────────────────────────
-    print(f"\nTraining ABMIL on all {len(bags)} training compounds ...")
+    if verbose:
+        print(f"\nTraining ABMIL on all {len(bags)} training compounds ...")
     torch.manual_seed(args.seed)
     model = GatedABMIL(input_dim, args.abmil_hidden, args.abmil_dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
@@ -237,11 +241,12 @@ def train_abmil(
     best_auroc = -1.0
     patience_counter = 0
     best_state = None
+    training_log = []  # collect per-epoch metrics
     ckpt_dir = output_dir / "checkpoints" if output_dir is not None else None
     if ckpt_dir is not None:
         ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
+    for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training", disable=not verbose):
         model.train()
         indices = np.random.permutation(len(bags))
         epoch_loss = 0.0
@@ -266,11 +271,13 @@ def train_abmil(
 
         # ── Periodic evaluation on test set ──────────────────────────────
         eval_auroc = None
+        eval_f1 = None
         if has_eval and (epoch + 1) % args.abmil_eval_every == 0:
             preds, probas = infer_abmil(model, eval_bags, device)
             eval_auroc = roc_auc_score(eval_labels, probas)
             eval_f1 = f1_score(eval_labels, preds, average="weighted", zero_division=0)
-            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  eval_AUROC={eval_auroc:.4f}  eval_F1={eval_f1:.4f}")
+            if verbose:
+                print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  eval_AUROC={eval_auroc:.4f}  eval_F1={eval_f1:.4f}")
 
             # Save checkpoint if best
             if eval_auroc > best_auroc:
@@ -285,11 +292,13 @@ def train_abmil(
                         "f1": eval_f1,
                         "loss": avg_loss,
                     }, ckpt_dir / "best_model.pt")
-                    print(f"    ✓ Saved best checkpoint (AUROC={eval_auroc:.4f})")
+                    if verbose:
+                        print(f"    ✓ Saved best checkpoint (AUROC={eval_auroc:.4f})")
             else:
                 patience_counter += 1
         elif (epoch + 1) % 50 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}")
+            if verbose:
+                print(f"  Epoch {epoch+1}/{args.abmil_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}")
 
         # Fallback: if no eval data, track training loss
         if not has_eval:
@@ -300,15 +309,34 @@ def train_abmil(
             else:
                 patience_counter += 1
 
+        # ── Log this epoch ───────────────────────────────────────────
+        training_log.append({
+            "epoch": epoch + 1,
+            "train_loss": avg_loss,
+            "lr": cur_lr,
+            "eval_auroc": eval_auroc,
+            "eval_f1": eval_f1,
+        })
+
         if patience_counter >= args.abmil_patience:
-            print(f"  Early stopping at epoch {epoch+1} (patience={args.abmil_patience})")
+            if verbose:
+                print(f"  Early stopping at epoch {epoch+1} (patience={args.abmil_patience})")
             break
+
+    # ── Save training log ────────────────────────────────────────────────
+    if output_dir is not None and training_log:
+        log_df = pd.DataFrame(training_log)
+        log_path = output_dir / "training_log.csv"
+        log_df.to_csv(log_path, index=False)
+        if verbose:
+            print(f"Training log saved : {log_path}")
 
     if best_state is not None:
         model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
-        if has_eval:
+        if has_eval and verbose:
             print(f"Restored best model (eval AUROC={best_auroc:.4f})")
-    print("Training done.\n")
+    if verbose:
+        print("Training done.\n")
     return model
 
 
@@ -427,7 +455,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run randomized hyperparameter search before training",
     )
-    p.add_argument("--tune_iter", type=int, default=100, help="Number of random search iterations (default: 50)")
+    p.add_argument("--tune_iter", type=int, default=100, help="Number of random search iterations (default: 100)")
 
     # ── Inference data ──
     p.add_argument(
@@ -463,13 +491,15 @@ def parse_args() -> argparse.Namespace:
 
     # ── ABMIL hyper-parameters ──
     p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 256)")
-    p.add_argument("--abmil_dropout", type=float, default=0.1, help="ABMIL dropout (default: 0.25)")
+    p.add_argument("--abmil_dropout", type=float, default=0.1, help="ABMIL dropout (default: 0.1)")
     p.add_argument("--abmil_lr", type=float, default=2e-4, help="ABMIL learning rate (default: 2e-4)")
-    p.add_argument("--abmil_wd", type=float, default=1e-4, help="ABMIL weight decay (default: 1e-3)")
+    p.add_argument("--abmil_wd", type=float, default=1e-4, help="ABMIL weight decay (default: 1e-4)")
     p.add_argument("--abmil_epochs", type=int, default=500, help="ABMIL training epochs (default: 500)")
-    p.add_argument("--abmil_patience", type=int, default=50, help="ABMIL early stopping patience (default: 80)")
+    p.add_argument("--abmil_patience", type=int, default=50, help="ABMIL early stopping patience (default: 50)")
     p.add_argument("--abmil_instance_dropout", type=float, default=0.1, help="Randomly drop this fraction of instances per bag during training (default: 0.1)")
-    p.add_argument("--abmil_eval_every", type=int, default=10, help="Evaluate on test set every N epochs (default: 10)")
+    p.add_argument("--abmil_eval_every", type=int, default=1, help="Evaluate on test set every N epochs (default: 1)")
+    p.add_argument("--abmil_tune_iter", type=int, default=50, help="Number of ABMIL hyperparameter search trials (default: 50)")
+    p.add_argument("--abmil_tune_epochs", type=int, default=50, help="Max epochs per ABMIL tuning trial (default: 20)")
 
     # ── Misc ──
     p.add_argument(
@@ -586,6 +616,17 @@ def _run_abmil(
     if len(inf_bags) == 0:
         raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
 
+    # ── Optional hyperparameter tuning ────────────────────────────────────
+    if args.tune:
+        best_params = _tune_abmil(
+            train_bags, train_labels, inf_bags, y_inf, args, device,
+        )
+        # Apply best params to args for final training
+        for k, v in best_params.items():
+            setattr(args, f"abmil_{k}", v)
+        print(f"\n  Final ABMIL config: hidden={args.abmil_hidden}  dropout={args.abmil_dropout}  "
+              f"lr={args.abmil_lr}  wd={args.abmil_wd}  instance_dropout={args.abmil_instance_dropout}")
+
     model = train_abmil(
         train_bags, train_labels, args, device,
         eval_bags=inf_bags, eval_labels=y_inf, output_dir=output_dir,
@@ -593,6 +634,80 @@ def _run_abmil(
 
     inf_preds, inf_proba = infer_abmil(model, inf_bags, device)
     return inf_preds, inf_proba, y_inf, cids_inf, "ABMIL"
+
+
+def _tune_abmil(
+    bags: List[torch.Tensor],
+    labels: List[int],
+    eval_bags: List[torch.Tensor],
+    eval_labels: np.ndarray,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> Dict:
+    """Random search over ABMIL hyperparameters, return best config."""
+    param_space = {
+        "hidden": [64, 128, 256],
+        "dropout": [0.1, 0.25, 0.4],
+        "lr": [5e-5, 1e-4, 2e-4, 5e-4],
+        "wd": [1e-5, 1e-4, 1e-3],
+        "instance_dropout": [0.0, 0.1, 0.2],
+    }
+
+    rng = np.random.RandomState(args.seed)
+    n_trials = args.abmil_tune_iter
+    print(f"\nABMIL hyperparameter tuning ({n_trials} trials, {args.abmil_tune_epochs} epochs each) ...")
+
+    best_auroc = -1.0
+    best_params = {}
+    results = []
+
+    for trial in range(n_trials):
+        # Sample random config
+        config = {k: rng.choice(v) for k, v in param_space.items()}
+
+        # Create trial args with shorter epochs and aggressive early stopping
+        trial_args = copy.deepcopy(args)
+        trial_args.abmil_hidden = int(config["hidden"])
+        trial_args.abmil_dropout = float(config["dropout"])
+        trial_args.abmil_lr = float(config["lr"])
+        trial_args.abmil_wd = float(config["wd"])
+        trial_args.abmil_instance_dropout = float(config["instance_dropout"])
+        trial_args.abmil_epochs = args.abmil_tune_epochs
+        trial_args.abmil_patience = 5  # aggressive early stopping for tuning
+
+        print(f"  Trial {trial+1}/{n_trials}  hidden={config['hidden']}  dropout={config['dropout']:.2f}  "
+              f"lr={config['lr']:.1e}  wd={config['wd']:.1e}  inst_drop={config['instance_dropout']:.1f}", end="")
+
+        torch.manual_seed(args.seed + trial)
+        model = train_abmil(
+            bags, labels, trial_args, device,
+            eval_bags=eval_bags, eval_labels=eval_labels,
+            verbose=False,
+        )
+
+        # Evaluate
+        preds, probas = infer_abmil(model, eval_bags, device)
+        auroc = roc_auc_score(eval_labels, probas)
+        trial_f1 = f1_score(eval_labels, preds, average="weighted", zero_division=0)
+        results.append({**config, "auroc": auroc, "f1": trial_f1})
+        print(f"  →  AUROC={auroc:.4f}  F1={trial_f1:.4f}{'  ★ BEST' if auroc > best_auroc else ''}")
+
+        if auroc > best_auroc:
+            best_auroc = auroc
+            best_params = dict(config)
+
+        del model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    print(f"\n  Best trial AUROC: {best_auroc:.4f}")
+    print(f"  Best params: {best_params}")
+
+    # Save tuning results
+    results_df = pd.DataFrame(results).sort_values("auroc", ascending=False)
+    print(f"\n  Top 5 configs:")
+    print(results_df.head().to_string(index=False))
+
+    return best_params
 
 
 def _run_xgboost(
