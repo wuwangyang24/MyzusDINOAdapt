@@ -179,7 +179,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--normalize_before_subtract", action="store_true",
                    help="L2-normalize treated and control embeddings before subtraction (requires --subtract_control)")
     p.add_argument("--val_split", type=float, default=0.2,
-                   help="Fraction of compounds used for validation. Default: 0.2")
+                   help="Fraction of compounds used for validation (early stopping / tuning). Default: 0.2")
+    p.add_argument("--test_split", type=float, default=0.15,
+                   help="Fraction of compounds held out for final evaluation (not seen during training). Default: 0.15")
 
     # ---- ABMIL hyper-parameters ----
     p.add_argument("--abmil_hidden", type=int, default=128,
@@ -281,35 +283,48 @@ def _run_abmil(
             "match the compound IDs in the metadata."
         )
 
-    # ── Train / val split ───────────────────────────────────────────────────
+    # ── Train / val / test split ─────────────────────────────────────────────
     n_total = len(bags)
+    n_test = max(1, int(n_total * args.test_split))
     n_val = max(1, int(n_total * args.val_split))
-    n_train = n_total - n_val
+    n_train = n_total - n_val - n_test
+    if n_train < 1:
+        raise RuntimeError(f"Not enough data for 3-way split: {n_total} total, need at least 3.")
     indices = np.random.permutation(n_total)
-    train_idx, val_idx = indices[:n_train], indices[n_train:]
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train + n_val]
+    test_idx = indices[n_train + n_val:]
 
     train_bags   = [bags[i] for i in train_idx]
     train_labels = [labels[i] for i in train_idx]
     val_bags     = [bags[i] for i in val_idx]
     val_labels   = [labels[i] for i in val_idx]
-    val_cids     = [cids[i] for i in val_idx]
-    print(f"  Train: {n_train}  |  Val: {n_val}")
+    test_bags    = [bags[i] for i in test_idx]
+    test_labels  = [labels[i] for i in test_idx]
+    test_cids    = [cids[i] for i in test_idx]
+    print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
 
-    # ── Train model ─────────────────────────────────────────────────────────
+    # ── Train model on train set (val for monitoring) ────────────────────────
     model = train_abmil(train_bags, train_labels, num_classes, args, device)
+
+    # ── Retrain on train+val with same config ────────────────────────────────
+    trainval_bags   = train_bags + val_bags
+    trainval_labels = train_labels + val_labels
+    print(f"\nRetraining ABMIL on train+val ({len(trainval_bags)} compounds) ...")
+    model = train_abmil(trainval_bags, trainval_labels, num_classes, args, device)
 
     # ── Save model ──────────────────────────────────────────────────────────
     torch.save(model.state_dict(), output_dir / "best_model.pt")
 
-    # ── Evaluate on validation set & save results ────────────────────────────
-    val_preds, val_probs = infer_abmil(model, val_bags, device)
-    val_true = np.array(val_labels)
+    # ── Evaluate on held-out test set ────────────────────────────────────────
+    test_preds, test_probs = infer_abmil(model, test_bags, device)
+    test_true = np.array(test_labels)
 
     save_results(
-        val_true=val_true,
-        val_preds=val_preds,
-        val_probs=val_probs,
-        val_cids=val_cids,
+        val_true=test_true,
+        val_preds=test_preds,
+        val_probs=test_probs,
+        val_cids=test_cids,
         classes=classes,
         num_classes=num_classes,
         output_dir=output_dir,
@@ -394,14 +409,23 @@ def _run_xgboost(
     num_classes = len(classes)
     print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
 
-    # ── Train / val split ────────────────────────────────────────────────────
-    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+    # ── Train / val / test split ─────────────────────────────────────────────
+    strat = y if len(np.unique(y)) > 1 else None
+    X_trainval, X_test, y_trainval, y_test, cids_trainval, cids_test = train_test_split(
         X, y, cids,
-        test_size=args.val_split,
+        test_size=args.test_split,
         random_state=args.seed,
-        stratify=y if len(np.unique(y)) > 1 else None,
+        stratify=strat,
     )
-    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
+    strat_tv = y_trainval if len(np.unique(y_trainval)) > 1 else None
+    relative_val = args.val_split / (1.0 - args.test_split)
+    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+        X_trainval, y_trainval, cids_trainval,
+        test_size=relative_val,
+        random_state=args.seed,
+        stratify=strat_tv,
+    )
+    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}  |  Test: {len(y_test)}")
 
     # ── Optional hyperparameter tuning ────────────────────────────────────────
     if args.tune:
@@ -445,18 +469,26 @@ def _run_xgboost(
         verbose=True,
     )
 
-    # ── Evaluation & save results ─────────────────────────────────────────────
-    val_preds = clf.predict(X_val)
-    val_probs = clf.predict_proba(X_val)  # (N, num_classes)
+    # ── Record best iteration, retrain on train+val ──────────────────────────
+    best_n = clf.best_iteration + 1 if hasattr(clf, 'best_iteration') and clf.best_iteration is not None else args.xgb_n_estimators
+    print(f"\nRetraining XGBoost on train+val ({len(y_trainval)} compounds, {best_n} rounds) ...")
+    xgb_final_params = {k: v for k, v in xgb_params.items() if k != 'early_stopping_rounds'}
+    xgb_final_params['n_estimators'] = best_n
+    clf = xgb.XGBClassifier(**xgb_final_params)
+    clf.fit(X_trainval, y_trainval, verbose=500)
+
+    # ── Evaluation on held-out test set ───────────────────────────────────────
+    test_preds = clf.predict(X_test)
+    test_probs = clf.predict_proba(X_test)  # (N, num_classes)
 
     _input_path = args.efficacy if args.efficacy else args.embeddings
     emb_stem = Path(_input_path).stem              # e.g. "embeddings_tiltedvae_dim100"
 
     save_results(
-        val_true=y_val,
-        val_preds=val_preds,
-        val_probs=val_probs,
-        val_cids=cids_val,
+        val_true=y_test,
+        val_preds=test_preds,
+        val_probs=test_probs,
+        val_cids=cids_test,
         classes=classes,
         num_classes=num_classes,
         output_dir=output_dir,
@@ -560,14 +592,23 @@ def _run_catboost(
     for ci, cname in enumerate(classes):
         print(f"    {cname}: {(y == ci).sum()} compounds")
 
-    # ── Train / val split ────────────────────────────────────────────────────
-    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+    # ── Train / val / test split ─────────────────────────────────────────────
+    strat = y if len(np.unique(y)) > 1 else None
+    X_trainval, X_test, y_trainval, y_test, cids_trainval, cids_test = train_test_split(
         X, y, cids,
-        test_size=args.val_split,
+        test_size=args.test_split,
         random_state=args.seed,
-        stratify=y if len(np.unique(y)) > 1 else None,
+        stratify=strat,
     )
-    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
+    strat_tv = y_trainval if len(np.unique(y_trainval)) > 1 else None
+    relative_val = args.val_split / (1.0 - args.test_split)
+    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+        X_trainval, y_trainval, cids_trainval,
+        test_size=relative_val,
+        random_state=args.seed,
+        stratify=strat_tv,
+    )
+    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}  |  Test: {len(y_test)}")
 
     # ── Optional hyperparameter tuning ────────────────────────────────────────
     if args.tune:
@@ -608,18 +649,26 @@ def _run_catboost(
         eval_set=(X_val, y_val),
     )
 
-    # ── Evaluation & save results ─────────────────────────────────────────────
-    val_preds = clf.predict(X_val).astype(int).ravel()
-    val_probs = clf.predict_proba(X_val)
+    # ── Record best iteration, retrain on train+val ──────────────────────────
+    best_n = clf.get_best_iteration() + 1 if clf.get_best_iteration() is not None else args.cb_iterations
+    print(f"\nRetraining CatBoost on train+val ({len(y_trainval)} compounds, {best_n} iterations) ...")
+    cb_final_params = {k: v for k, v in cb_params.items() if k != 'early_stopping_rounds'}
+    cb_final_params['iterations'] = best_n
+    clf = CatBoostClassifier(**cb_final_params)
+    clf.fit(X_trainval, y_trainval)
+
+    # ── Evaluation on held-out test set ───────────────────────────────────────
+    test_preds = clf.predict(X_test).astype(int).ravel()
+    test_probs = clf.predict_proba(X_test)
 
     _input_path = args.efficacy if args.efficacy else args.embeddings
     emb_stem = Path(_input_path).stem
 
     save_results(
-        val_true=y_val,
-        val_preds=val_preds,
-        val_probs=val_probs,
-        val_cids=cids_val,
+        val_true=y_test,
+        val_preds=test_preds,
+        val_probs=test_probs,
+        val_cids=cids_test,
         classes=classes,
         num_classes=num_classes,
         output_dir=output_dir,
