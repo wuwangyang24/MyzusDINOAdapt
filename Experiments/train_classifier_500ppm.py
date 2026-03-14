@@ -692,7 +692,7 @@ def _tune_abmil(
         model = train_abmil(
             bags, labels, trial_args, device,
             eval_bags=eval_bags, eval_labels=eval_labels,
-            verbose=False,
+            verbose=True,
         )
 
         # Evaluate
