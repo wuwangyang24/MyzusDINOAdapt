@@ -237,12 +237,12 @@ def parse_args() -> argparse.Namespace:
     # ---- CatBoost hyper-parameters ----
     p.add_argument("--cb_iterations", type=int, default=500,
                    help="[CatBoost] Number of boosting iterations. Default: 500")
-    p.add_argument("--cb_depth", type=int, default=6,
-                   help="[CatBoost] Tree depth. Default: 6")
+    p.add_argument("--cb_depth", type=int, default=4,
+                   help="[CatBoost] Tree depth. Default: 4")
     p.add_argument("--cb_learning_rate", type=float, default=0.1,
                    help="[CatBoost] Learning rate. Default: 0.1")
-    p.add_argument("--cb_l2_leaf_reg", type=float, default=3.0,
-                   help="[CatBoost] L2 regularization. Default: 3.0")
+    p.add_argument("--cb_l2_leaf_reg", type=float, default=1.0,
+                   help="[CatBoost] L2 regularization. Default: 1.0")
     p.add_argument("--cb_auto_class_weights", choices=["None", "Balanced", "SqrtBalanced"],
                    default="Balanced",
                    help="[CatBoost] Auto class weighting. Default: Balanced")
@@ -282,6 +282,29 @@ def _run_abmil(
             "Dataset is empty. Check that compound IDs in the embeddings file "
             "match the compound IDs in the metadata."
         )
+
+    # ── Remove classes with fewer than min_compounds_per_class compounds ──
+    min_cpc = max(args.min_compounds_per_class, 2)
+    labels_arr = np.array(labels)
+    class_counts = np.bincount(labels_arr)
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
+    keep_mask = np.array([li in valid_classes for li in labels_arr])
+    n_removed = len(labels) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[li] for li in labels_arr if li not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
+        bags   = [b for b, k in zip(bags, keep_mask) if k]
+        labels = [l for l, k in zip(labels, keep_mask) if k]
+        cids   = [c for c, k in zip(cids, keep_mask) if k]
+
+    # Remap labels to contiguous 0..K-1
+    remaining = sorted(set(labels))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    labels = [old2new[li] for li in labels]
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
 
     # ── Train / val / test split ─────────────────────────────────────────────
     n_total = len(bags)
