@@ -68,6 +68,21 @@ Usage examples
       --metadata   data/compound_metadata.csv \\
       --classifier xgboost
 
+  # CatBoost with balanced class weights (default)
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       catboost
+
+  # CatBoost with softer balancing and control subtraction
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       catboost \\
+      --subtract_control \\
+      --cb_auto_class_weights SqrtBalanced \\
+      --cb_iterations 1000 --cb_depth 8
+
 Output
 ------
   <output_dir>/
@@ -103,6 +118,12 @@ try:
     _HAS_XGBOOST = True
 except ImportError:
     _HAS_XGBOOST = False
+
+try:
+    from catboost import CatBoostClassifier
+    _HAS_CATBOOST = True
+except ImportError:
+    _HAS_CATBOOST = False
 
 # ── project imports ──────────────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -508,7 +529,7 @@ def parse_args() -> argparse.Namespace:
                    help="Drop synthesis programs with fewer compounds than this. Default: 2")
 
     # ---- Classifier selection ----
-    p.add_argument("--classifier", choices=["abmil", "xgboost"],
+    p.add_argument("--classifier", choices=["abmil", "xgboost", "catboost"],
                    default="abmil",
                    help="Which classifier to use. Default: abmil")
 
@@ -525,6 +546,21 @@ def parse_args() -> argparse.Namespace:
                    help="[XGBoost] Column subsampling ratio. Default: 0.8")
     p.add_argument("--xgb_early_stopping", type=int, default=20,
                    help="[XGBoost] Early stopping rounds. Default: 20")
+
+    # ---- CatBoost hyper-parameters ----
+    p.add_argument("--cb_iterations", type=int, default=500,
+                   help="[CatBoost] Number of boosting iterations. Default: 500")
+    p.add_argument("--cb_depth", type=int, default=6,
+                   help="[CatBoost] Tree depth. Default: 6")
+    p.add_argument("--cb_learning_rate", type=float, default=0.1,
+                   help="[CatBoost] Learning rate. Default: 0.1")
+    p.add_argument("--cb_l2_leaf_reg", type=float, default=3.0,
+                   help="[CatBoost] L2 regularization. Default: 3.0")
+    p.add_argument("--cb_auto_class_weights", choices=["None", "Balanced", "SqrtBalanced"],
+                   default="Balanced",
+                   help="[CatBoost] Auto class weighting. Default: Balanced")
+    p.add_argument("--cb_early_stopping", type=int, default=50,
+                   help="[CatBoost] Early stopping rounds. Default: 50")
 
     return p.parse_args()
 
@@ -753,6 +789,156 @@ def _run_xgboost(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 6b. CatBoost training pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _run_catboost(
+    args: argparse.Namespace,
+    embeddings: Optional[Dict],
+    df: pd.DataFrame,
+    str2idx: Dict[str, int],
+    classes: List[str],
+    num_classes: int,
+    output_dir: Path,
+    efficacy: Optional[Dict[str, float]] = None,
+) -> None:
+    """Train a CatBoost classifier on per-compound features."""
+    if not _HAS_CATBOOST:
+        raise ImportError(
+            "catboost is required for --classifier catboost. "
+            "Install it with:  pip install catboost"
+        )
+
+    from sklearn.model_selection import train_test_split
+
+    # ── Build feature matrix ─────────────────────────────────────────────────
+    if efficacy is not None:
+        X, y, cids = build_efficacy_features(
+            efficacy=efficacy,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+        )
+    else:
+        X, y, cids = build_mean_latent_features(
+            embeddings=embeddings,
+            compound_col=df[args.compound_col],
+            label_col=df[args.label_col],
+            label2idx=str2idx,
+            subtract_control=args.subtract_control,
+            normalize_before_subtract=args.normalize_before_subtract,
+        )
+    print(f"  {X.shape[0]} compounds with valid features.")
+    print(f"  Feature dim (D) : {X.shape[1]}")
+
+    if X.shape[0] == 0:
+        raise RuntimeError(
+            "Dataset is empty. Check that compound IDs in the input file "
+            "match the compound IDs in the metadata."
+        )
+
+    # ── Remove classes with fewer than min_compounds_per_class compounds ──
+    min_cpc = max(args.min_compounds_per_class, 2)
+    class_counts = np.bincount(y)
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
+    keep_mask = np.array([yi in valid_classes for yi in y])
+    n_removed = len(y) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
+        X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
+
+    # Remap labels to contiguous 0..K-1
+    remaining = sorted(set(y.tolist()))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    y = np.array([old2new[yi] for yi in y])
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
+
+    # ── Class distribution ───────────────────────────────────────────────────
+    for ci, cname in enumerate(classes):
+        print(f"    {cname}: {(y == ci).sum()} compounds")
+
+    # ── Train / val split ────────────────────────────────────────────────────
+    X_train, X_val, y_train, y_val, cids_train, cids_val = train_test_split(
+        X, y, cids,
+        test_size=args.val_split,
+        random_state=args.seed,
+        stratify=y if len(np.unique(y)) > 1 else None,
+    )
+    print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
+
+    # ── CatBoost model ───────────────────────────────────────────────────────
+    auto_cw = None if args.cb_auto_class_weights == "None" else args.cb_auto_class_weights
+    cb_params = dict(
+        iterations=args.cb_iterations,
+        depth=args.cb_depth,
+        learning_rate=args.cb_learning_rate,
+        l2_leaf_reg=args.cb_l2_leaf_reg,
+        auto_class_weights=auto_cw,
+        loss_function="MultiClass" if num_classes > 2 else "Logloss",
+        eval_metric="TotalF1:average=Weighted" if num_classes > 2 else "F1",
+        random_seed=args.seed,
+        verbose=50,
+        early_stopping_rounds=args.cb_early_stopping,
+    )
+
+    clf = CatBoostClassifier(**cb_params)
+
+    print(f"\nTraining CatBoost ({args.cb_iterations} iters, depth={args.cb_depth}, "
+          f"lr={args.cb_learning_rate}, class_weights={auto_cw}) ...")
+    clf.fit(
+        X_train, y_train,
+        eval_set=(X_val, y_val),
+    )
+
+    # ── Evaluation & save results ─────────────────────────────────────────────
+    val_preds = clf.predict(X_val).astype(int).ravel()
+    val_probs = clf.predict_proba(X_val)
+
+    _input_path = args.efficacy if args.efficacy else args.embeddings
+    emb_stem = Path(_input_path).stem
+
+    save_results(
+        val_true=y_val,
+        val_preds=val_preds,
+        val_probs=val_probs,
+        val_cids=cids_val,
+        classes=classes,
+        num_classes=num_classes,
+        output_dir=output_dir,
+        cm_title=f"Confusion Matrix — CatBoost — {emb_stem}",
+        file_suffix=f"_{emb_stem}",
+        report_header=(
+            f"Classifier       : catboost\n"
+            f"Input file       : {_input_path}\n"
+            f"Subtract control : {args.subtract_control}\n"
+            f"Normalize before subtract : {args.normalize_before_subtract}\n"
+            f"Auto class weights : {auto_cw}\n\n"
+        ),
+        save_predictions=args.save_predictions,
+    )
+
+    # ── Save model ───────────────────────────────────────────────────────────
+    model_path = output_dir / f"catboost_model_{emb_stem}.cbm"
+    clf.save_model(str(model_path))
+    print(f"Model saved to     : {model_path}")
+
+    # ── Training log ─────────────────────────────────────────────────────────
+    evals = clf.get_evals_result()
+    if evals and "validation" in evals:
+        metrics = evals["validation"]
+        first_key = next(iter(metrics))
+        log_df = pd.DataFrame({
+            "epoch": list(range(1, len(metrics[first_key]) + 1)),
+            **{k: v for k, v in metrics.items()},
+        })
+        log_df.to_csv(output_dir / f"training_log_{emb_stem}.csv", index=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 7.  Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -817,9 +1003,20 @@ def main() -> None:
     print(f"  {num_classes} synthesis programs: {classes}")
     save_label_encoder(classes, str2idx, output_dir / "label_encoder.json")
 
-    # ── Route to XGBoost or ABMIL ─────────────────────────────────────────
+    # ── Route to classifier ───────────────────────────────────────────────
     if args.classifier == "xgboost":
         _run_xgboost(
+            args=args,
+            embeddings=embeddings,
+            df=df,
+            str2idx=str2idx,
+            classes=classes,
+            num_classes=num_classes,
+            output_dir=output_dir,
+            efficacy=efficacy,
+        )
+    elif args.classifier == "catboost":
+        _run_catboost(
             args=args,
             embeddings=embeddings,
             df=df,
