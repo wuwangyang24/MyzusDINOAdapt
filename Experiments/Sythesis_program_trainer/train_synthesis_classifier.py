@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
                    help="L2-normalize treated and control embeddings before subtraction (requires --subtract_control)")
     p.add_argument("--val_split", type=float, default=0.2,
                    help="Fraction of compounds used for validation (early stopping / tuning). Default: 0.2")
-    p.add_argument("--test_split", type=float, default=0.15,
+    p.add_argument("--test_split", type=float, default=0.2,
                    help="Fraction of compounds held out for final evaluation (not seen during training). Default: 0.15")
 
     # ---- ABMIL hyper-parameters ----

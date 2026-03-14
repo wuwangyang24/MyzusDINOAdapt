@@ -86,7 +86,7 @@ def _tune_xgboost(
         )
 
         val_preds = clf.predict(X_val)
-        trial_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
+        trial_f1 = f1_score(y_val, val_preds, average="macro", zero_division=0)
         trial_acc = balanced_accuracy_score(y_val, val_preds)
 
         results.append({**config, "f1": trial_f1, "balanced_acc": trial_acc})
@@ -171,7 +171,7 @@ def _tune_catboost(
         )
 
         val_preds = clf.predict(X_val).astype(int).ravel()
-        trial_f1 = f1_score(y_val, val_preds, average="weighted", zero_division=0)
+        trial_f1 = f1_score(y_val, val_preds, average="macro", zero_division=0)
         trial_acc = balanced_accuracy_score(y_val, val_preds)
 
         results.append({**config, "f1": trial_f1, "balanced_acc": trial_acc})
