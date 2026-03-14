@@ -671,7 +671,7 @@ def main() -> None:
     print(f"Device : {device}")
 
     # ── Output directory ─────────────────────────────────────────────────────
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir) / args.classifier
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────
