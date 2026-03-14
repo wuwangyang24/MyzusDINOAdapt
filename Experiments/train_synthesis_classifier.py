@@ -83,6 +83,20 @@ Usage examples
       --cb_auto_class_weights SqrtBalanced \\
       --cb_iterations 1000 --cb_depth 8
 
+  # XGBoost with hyperparameter tuning
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       xgboost \\
+      --tune --tune_iter 50
+
+  # CatBoost with hyperparameter tuning
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       catboost \\
+      --tune --tune_iter 50
+
 Output
 ------
   <output_dir>/
@@ -92,10 +106,9 @@ Output
 """
 
 import argparse
-import json
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import warnings
 
@@ -104,14 +117,6 @@ warnings.filterwarnings("ignore")
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from sklearn.metrics import (
-    balanced_accuracy_score, f1_score, classification_report, confusion_matrix
-)
-from tqdm import tqdm
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 try:
     import xgboost as xgb
@@ -130,348 +135,22 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 1.  Data loading helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def load_efficacy_data(path: str) -> Dict[str, float]:
-    """
-    Load efficacy.pt → {compound_id: efficacy_value}.
-
-    Expected format: [{'Compound': '...', 'Efficacy': float}, ...]
-    """
-    data = torch.load(path, map_location="cpu", weights_only=False)
-    return {str(entry['Compound']): float(entry['Efficacy']) for entry in data}
-
-
-def build_efficacy_features(
-    efficacy: Dict[str, float],
-    compound_col: pd.Series,
-    label_col: pd.Series,
-    label2idx: Dict[str, int],
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """Build an (N, 1) feature matrix from efficacy values."""
-    comp2label: Dict[str, int] = {}
-    for comp, prog in zip(compound_col, label_col):
-        comp2label[str(comp)] = label2idx[str(prog)]
-
-    X_rows, y_rows, cids = [], [], []
-    for cid, eff_val in efficacy.items():
-        if cid not in comp2label:
-            continue
-        X_rows.append([eff_val])
-        y_rows.append(comp2label[cid])
-        cids.append(cid)
-
-    return np.array(X_rows, dtype=np.float32), np.array(y_rows), cids
+from classifier_utils import (
+    load_efficacy_data,
+    build_efficacy_features,
+    build_mil_bags,
+    build_mean_latent_features,
+    GatedABMIL,
+    train_abmil,
+    infer_abmil,
+    build_label_encoder,
+    save_label_encoder,
+    save_results,
+)
+from classifier_tuning import _tune_xgboost, _tune_catboost
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 2.  Model — Gated Attention-Based MIL (ABMIL)
-# ═══════════════════════════════════════════════════════════════════════════════
 
-
-class GatedABMIL(nn.Module):
-    """Gated Attention-Based Multiple Instance Learning classifier (multi-class)."""
-
-    def __init__(self, input_dim: int, num_classes: int, hidden_dim: int = 128, dropout: float = 0.25):
-        super().__init__()
-        self.attention_V = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.Tanh(),
-        )
-        self.attention_U = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.Sigmoid(),
-        )
-        self.attention_w = nn.Linear(hidden_dim, 1)
-        self.classifier = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
-
-    def forward(self, bag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass.
-
-        Parameters
-        ----------
-        bag : (N_instances, D)
-
-        Returns
-        -------
-        logits : (num_classes,) raw logits
-        att    : (N_instances,) attention weights
-        """
-        V = self.attention_V(bag)             # (N, H)
-        U = self.attention_U(bag)             # (N, H)
-        att_logits = self.attention_w(V * U)  # (N, 1)
-        att = torch.softmax(att_logits, dim=0)  # (N, 1)
-        bag_repr = (att * bag).sum(dim=0, keepdim=True)  # (1, D)
-        logits = self.classifier(bag_repr).squeeze(0)     # (num_classes,)
-        return logits, att.squeeze()
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3.  ABMIL Training & Inference helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-def _l2_normalize(x: torch.Tensor, dim: int = -1, eps: float = 1e-8) -> torch.Tensor:
-    """L2-normalize along *dim*."""
-    return x / (x.norm(dim=dim, keepdim=True) + eps)
-
-
-def build_mil_bags(
-    embeddings: Dict,
-    compound_col: pd.Series,
-    label_col: pd.Series,
-    label2idx: Dict[str, int],
-    subtract_control: bool = False,
-    normalize_before_subtract: bool = False,
-) -> Tuple[List[torch.Tensor], List[int], List[str]]:
-    """Build variable-length bags of instance embeddings per compound."""
-    comp2label: Dict[str, int] = {}
-    for comp, prog in zip(compound_col, label_col):
-        comp2label[str(comp)] = label2idx[str(prog)]
-
-    bags, labels, cids = [], [], []
-    for compound_id, plates in embeddings.items():
-        cid = str(compound_id)
-        if cid not in comp2label:
-            continue
-        plate_latents: List[torch.Tensor] = []
-        for plate_data in plates.values():
-            treated = plate_data.get("treated")
-            if treated is None or treated.numel() == 0:
-                continue
-            if subtract_control and "control" in plate_data:
-                control = plate_data["control"]
-                if normalize_before_subtract:
-                    treated = _l2_normalize(treated)
-                    control = _l2_normalize(control)
-                treated = treated - control.unsqueeze(0)
-            plate_latents.append(treated.float())
-        if not plate_latents:
-            continue
-        bags.append(torch.cat(plate_latents, dim=0))
-        labels.append(comp2label[cid])
-        cids.append(cid)
-    return bags, labels, cids
-
-
-def train_abmil(
-    bags: List[torch.Tensor],
-    labels: List[int],
-    num_classes: int,
-    args: argparse.Namespace,
-    device: torch.device,
-) -> GatedABMIL:
-    """Train Gated ABMIL on all data, return trained model."""
-    input_dim = bags[0].shape[1]
-
-    torch.manual_seed(args.seed)
-    model = GatedABMIL(input_dim, num_classes, args.abmil_hidden, args.abmil_dropout).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.abmil_lr, weight_decay=args.abmil_wd)
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
-
-    print(f"\nTraining ABMIL on {len(bags)} compounds ({num_classes} classes) ...")
-    for epoch in tqdm(range(args.abmil_epochs), desc="ABMIL Training"):
-        model.train()
-        indices = np.random.permutation(len(bags))
-        epoch_loss = 0.0
-        for i in indices:
-            bag = bags[i].to(device)
-            label = torch.tensor(labels[i], dtype=torch.long, device=device)
-            logits, _ = model(bag)
-            loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            epoch_loss += loss.item()
-
-    print("Training done.\n")
-    return model
-
-
-def infer_abmil(
-    model: GatedABMIL,
-    bags: List[torch.Tensor],
-    device: torch.device,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Run inference, return (predictions, class-probabilities)."""
-    model.eval()
-    all_preds, all_probs = [], []
-    with torch.no_grad():
-        for bag in bags:
-            logits, _ = model(bag.to(device))
-            probs = torch.softmax(logits, dim=0).cpu().numpy()
-            all_probs.append(probs)
-            all_preds.append(int(probs.argmax()))
-    return np.array(all_preds), np.stack(all_probs)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4.  Label encoding helpers
-# ═══════════════════════════════════════════════════════════════════════════════
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 3b. Mean-latent feature builder (for XGBoost)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def build_mean_latent_features(
-    embeddings: Dict,
-    compound_col: pd.Series,
-    label_col: pd.Series,
-    label2idx: Dict[str, int],
-    subtract_control: bool = False,
-    normalize_before_subtract: bool = False,
-) -> Tuple[np.ndarray, np.ndarray, List[str]]:
-    """
-    Build a (num_compounds, D) feature matrix where each row is the mean
-    of all treated latents for a compound (optionally control-subtracted).
-
-    Returns
-    -------
-    X         : (N, D) float32 array
-    y         : (N,) int array
-    cids      : list of compound ID strings
-    """
-    comp2label: Dict[str, int] = {}
-    for comp, prog in zip(compound_col, label_col):
-        comp2label[str(comp)] = label2idx[str(prog)]
-
-    X_rows, y_rows, cids = [], [], []
-
-    for compound_id, plates in embeddings.items():
-        cid = str(compound_id)
-        if cid not in comp2label:
-            continue
-
-        plate_latents: List[torch.Tensor] = []
-        for plate_data in plates.values():
-            treated = plate_data.get("treated")
-            if treated is None or treated.numel() == 0:
-                continue
-            if subtract_control and "control" in plate_data:
-                control = plate_data["control"]
-                if normalize_before_subtract:
-                    treated = _l2_normalize(treated)
-                    control = _l2_normalize(control)
-                treated = treated - control.unsqueeze(0)
-            plate_latents.append(treated.float())
-
-        if not plate_latents:
-            continue
-
-        all_latents = torch.cat(plate_latents, dim=0)       # (M, D)
-        mean_latent = all_latents.mean(dim=0).numpy()       # (D,)
-        X_rows.append(mean_latent)
-        y_rows.append(comp2label[cid])
-        cids.append(cid)
-
-    return np.stack(X_rows), np.array(y_rows), cids
-
-
-def build_label_encoder(series: pd.Series) -> Tuple[Dict[str, int], List[str]]:
-    classes = sorted(series.astype(str).unique().tolist())
-    str2idx = {c: i for i, c in enumerate(classes)}
-    return str2idx, classes
-
-
-def save_label_encoder(classes: List[str], str2idx: Dict[str, int], path: Path) -> None:
-    with open(path, "w") as f:
-        json.dump({"classes": classes, "str2idx": str2idx}, f, indent=2)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# 4b. Result saving helper
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def save_results(
-    val_true: np.ndarray,
-    val_preds: np.ndarray,
-    val_probs: np.ndarray,
-    val_cids: List[str],
-    classes: List[str],
-    num_classes: int,
-    output_dir: Path,
-    cm_title: str,
-    file_suffix: str,
-    report_header: str,
-    save_predictions: bool,
-) -> None:
-    """Save classification report, confusion matrix, and (optionally) predictions CSV."""
-    val_acc = balanced_accuracy_score(val_true, val_preds)
-    val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
-
-    report_str = classification_report(
-        val_true, val_preds,
-        labels=list(range(num_classes)),
-        target_names=classes,
-        zero_division=0,
-    )
-    print("\nClassification Report (validation set):")
-    print(report_str)
-    print(f"Val accuracy : {val_acc:.4f}")
-    print(f"Val F1       : {val_f1:.4f}")
-
-    # ── Classification report text file ──────────────────────────────────────
-    report_path = output_dir / f"classification_report{file_suffix}.txt"
-    with open(report_path, "w") as f:
-        f.write(report_header)
-        f.write(report_str)
-        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
-        f.write(f"Val F1       : {val_f1:.4f}\n")
-    print(f"Report saved to    : {report_path}")
-
-    # ── Confusion matrix ─────────────────────────────────────────────────────
-    cm = confusion_matrix(val_true, val_preds, labels=list(range(num_classes)))
-    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
-    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
-    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set(
-        xticks=range(num_classes),
-        yticks=range(num_classes),
-        xticklabels=classes,
-        yticklabels=classes,
-        ylabel="True label",
-        xlabel="Predicted label",
-        title=cm_title,
-    )
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    thresh = cm.max() / 2.0
-    for i in range(num_classes):
-        for j in range(num_classes):
-            ax.text(j, i, str(cm[i, j]),
-                    ha="center", va="center",
-                    color="white" if cm[i, j] > thresh else "black",
-                    fontsize=7)
-    fig.tight_layout()
-    cm_path = output_dir / f"confusion_matrix{file_suffix}.png"
-    fig.savefig(cm_path, dpi=150)
-    plt.close(fig)
-    print(f"Confusion matrix   : {cm_path}")
-
-    # ── Predictions CSV ──────────────────────────────────────────────────────
-    if save_predictions:
-        pred_rows = {
-            "compound_id":     val_cids,
-            "true_label":      [classes[i] for i in val_true],
-            "predicted_label": [classes[i] for i in val_preds],
-            "correct":         [t == p for t, p in zip(val_true, val_preds)],
-        }
-        for cls_idx, cls_name in enumerate(classes):
-            pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
-
-        pred_df = pd.DataFrame(pred_rows)
-        pred_path = output_dir / f"predictions{file_suffix}.csv"
-        pred_df.to_csv(pred_path, index=False)
-        print(f"Predictions saved to: {pred_path}")
-
-    print(f"Outputs saved to   : {output_dir}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -515,6 +194,12 @@ def parse_args() -> argparse.Namespace:
                    help="ABMIL training epochs. Default: 200")
     p.add_argument("--label_smoothing", type=float, default=0.1,
                    help="Label smoothing for CrossEntropyLoss. Default: 0.1")
+
+    # ---- Tuning ----
+    p.add_argument("--tune", action="store_true",
+                   help="Run randomized hyperparameter search before final training")
+    p.add_argument("--tune_iter", type=int, default=50,
+                   help="Number of random search iterations. Default: 50")
 
     # ---- Misc ----
     p.add_argument("--output_dir",  default="Experiments/runs/classifier",
@@ -718,6 +403,20 @@ def _run_xgboost(
     )
     print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
 
+    # ── Optional hyperparameter tuning ────────────────────────────────────────
+    if args.tune:
+        best_params = _tune_xgboost(
+            X_train, y_train, X_val, y_val, num_classes, args,
+        )
+        args.xgb_n_estimators = best_params["n_estimators"]
+        args.xgb_max_depth = best_params["max_depth"]
+        args.xgb_learning_rate = best_params["learning_rate"]
+        args.xgb_subsample = best_params["subsample"]
+        args.xgb_colsample_bytree = best_params["colsample_bytree"]
+        print(f"\n  Final XGBoost config: n_estimators={args.xgb_n_estimators}  "
+              f"max_depth={args.xgb_max_depth}  lr={args.xgb_learning_rate}  "
+              f"subsample={args.xgb_subsample}  colsample={args.xgb_colsample_bytree}")
+
     # ── XGBoost model ────────────────────────────────────────────────────────
     objective = "multi:softprob" if num_classes > 2 else "binary:logistic"
     xgb_params = dict(
@@ -869,6 +568,21 @@ def _run_catboost(
         stratify=y if len(np.unique(y)) > 1 else None,
     )
     print(f"  Train: {len(y_train)}  |  Val: {len(y_val)}")
+
+    # ── Optional hyperparameter tuning ────────────────────────────────────────
+    if args.tune:
+        best_params = _tune_catboost(
+            X_train, y_train, X_val, y_val, num_classes, args,
+        )
+        args.cb_iterations = best_params["iterations"]
+        args.cb_depth = best_params["depth"]
+        args.cb_learning_rate = best_params["learning_rate"]
+        args.cb_l2_leaf_reg = best_params["l2_leaf_reg"]
+        args.cb_auto_class_weights = best_params["auto_class_weights"]
+        print(f"\n  Final CatBoost config: iterations={args.cb_iterations}  "
+              f"depth={args.cb_depth}  lr={args.cb_learning_rate}  "
+              f"l2_leaf_reg={args.cb_l2_leaf_reg}  "
+              f"class_weights={args.cb_auto_class_weights}")
 
     # ── CatBoost model ───────────────────────────────────────────────────────
     auto_cw = None if args.cb_auto_class_weights == "None" else args.cb_auto_class_weights
