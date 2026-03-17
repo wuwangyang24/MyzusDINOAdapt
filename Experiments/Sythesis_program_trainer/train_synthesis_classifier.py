@@ -207,6 +207,8 @@ def parse_args() -> argparse.Namespace:
     # ---- Misc ----
     p.add_argument("--output_dir",  default="Experiments/runs/classifier",
                    help="Directory for checkpoints and logs. Default: Experiments/runs/classifier")
+    p.add_argument("--model_name", default=None,
+                   help="Model name for the output directory. Defaults to the stem of the input file.")
     p.add_argument("--device",      default=None,
                    help="Torch device. Auto-detected if not specified.")
     p.add_argument("--seed",        type=int, default=42, help="Random seed. Default: 42")
@@ -746,8 +748,11 @@ def main() -> None:
 
     # ── Output directory ─────────────────────────────────────────────────────
     date_str = datetime.now().strftime("%Y-%m-%d")
-    input_path = args.efficacy if args.efficacy else args.embeddings
-    model_name = Path(input_path).stem if input_path else "unknown_model"
+    if args.model_name:
+        model_name = args.model_name
+    else:
+        input_path = args.efficacy if args.efficacy else args.embeddings
+        model_name = Path(input_path).stem if input_path else "unknown_model"
     subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
     output_dir = Path(args.output_dir) / date_str / model_name / args.classifier / subtract_dir
     output_dir.mkdir(parents=True, exist_ok=True)
