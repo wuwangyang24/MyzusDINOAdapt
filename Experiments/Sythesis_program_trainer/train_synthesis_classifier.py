@@ -746,8 +746,10 @@ def main() -> None:
 
     # ── Output directory ─────────────────────────────────────────────────────
     date_str = datetime.now().strftime("%Y-%m-%d")
+    input_path = args.efficacy if args.efficacy else args.embeddings
+    model_name = Path(input_path).stem if input_path else "unknown_model"
     subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
-    output_dir = Path(args.output_dir) / date_str / args.classifier / subtract_dir
+    output_dir = Path(args.output_dir) / date_str / model_name / args.classifier / subtract_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────
