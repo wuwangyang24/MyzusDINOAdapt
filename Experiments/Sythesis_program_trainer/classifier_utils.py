@@ -295,9 +295,9 @@ def save_results(
     val_acc = balanced_accuracy_score(val_true, val_preds)
     val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
 
-    # ── Top-k accuracies ─────────────────────────────────────────────────────
+    # ── Top-k accuracies (always include top-1) ─────────────────────────────
     topk_results = {}
-    for k in topk:
+    for k in sorted(set((1,) + topk)):
         if k > num_classes:
             continue
         if k == 1:
