@@ -745,9 +745,9 @@ def main() -> None:
     print(f"Device : {device}")
 
     # ── Output directory ─────────────────────────────────────────────────────
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    date_str = datetime.now().strftime("%Y-%m-%d")
     subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
-    output_dir = Path(args.output_dir) / timestamp / args.classifier / subtract_dir
+    output_dir = Path(args.output_dir) / date_str / args.classifier / subtract_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────

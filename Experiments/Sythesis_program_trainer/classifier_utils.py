@@ -277,6 +277,63 @@ def save_label_encoder(classes: List[str], str2idx: Dict[str, int], path: Path) 
 # 4.  Result saving
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _plot_confusion_matrix(
+    cm: np.ndarray,
+    classes: List[str],
+    num_classes: int,
+    title: str,
+    save_path: Path,
+) -> None:
+    """Plot and save a confusion matrix."""
+    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
+    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(
+        xticks=range(num_classes),
+        yticks=range(num_classes),
+        xticklabels=classes,
+        yticklabels=classes,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title=title,
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+    thresh = cm.max() / 2.0
+    for i in range(num_classes):
+        for j in range(num_classes):
+            ax.text(j, i, str(cm[i, j]),
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > thresh else "black",
+                    fontsize=7)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+
+def _topk_predictions(val_probs: np.ndarray, k: int) -> np.ndarray:
+    """Return the top-k predicted class indices for each sample, shape (N, k)."""
+    return np.argsort(val_probs, axis=1)[:, -k:][:, ::-1]
+
+
+def _topk_confusion_matrix(
+    val_true: np.ndarray,
+    val_probs: np.ndarray,
+    k: int,
+    num_classes: int,
+) -> np.ndarray:
+    """Build a confusion matrix where a prediction counts as correct if the
+    true label is within the top-k predictions.  Off-diagonal entries show
+    which class was predicted as #1 when the true label was NOT in top-k."""
+    topk_idx = _topk_predictions(val_probs, k)  # (N, k)
+    cm = np.zeros((num_classes, num_classes), dtype=int)
+    for i, (true, top_classes) in enumerate(zip(val_true, topk_idx)):
+        if true in top_classes:
+            cm[true, true] += 1       # correct under top-k
+        else:
+            cm[true, top_classes[0]] += 1  # wrong: attribute to top-1 pred
+    return cm
+
+
 def save_results(
     val_true: np.ndarray,
     val_preds: np.ndarray,
@@ -296,68 +353,103 @@ def save_results(
     val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
 
     # ── Top-k accuracies (always include top-1) ─────────────────────────────
+    all_k = sorted(set((1,) + tuple(topk)))
     topk_results = {}
-    for k in sorted(set((1,) + topk)):
+    for k in all_k:
         if k > num_classes:
             continue
         if k == 1:
-            topk_results[k] = (val_preds == val_true).mean()
+            topk_results[k] = float((val_preds == val_true).mean())
         else:
-            topk_results[k] = top_k_accuracy_score(
+            topk_results[k] = float(top_k_accuracy_score(
                 val_true, val_probs, k=k, labels=list(range(num_classes)),
-            )
+            ))
 
+    # ── Per-class top-k accuracy ─────────────────────────────────────────────
+    per_class_topk: Dict[int, Dict[str, float]] = {}
+    for k in topk_results:
+        if k == 1:
+            continue
+        topk_idx = _topk_predictions(val_probs, k)
+        correct = np.array([t in row for t, row in zip(val_true, topk_idx)])
+        class_acc = {}
+        for ci, cname in enumerate(classes):
+            mask = val_true == ci
+            if mask.sum() == 0:
+                class_acc[cname] = 0.0
+            else:
+                class_acc[cname] = float(correct[mask].mean())
+        per_class_topk[k] = class_acc
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Top-1 report & confusion matrix
+    # ══════════════════════════════════════════════════════════════════════════
     report_str = classification_report(
         val_true, val_preds,
         labels=list(range(num_classes)),
         target_names=classes,
         zero_division=0,
     )
-    print("\nClassification Report (validation set):")
+    print("\n── Top-1 Classification Report ──")
     print(report_str)
-    print(f"Val accuracy : {val_acc:.4f}")
-    print(f"Val F1       : {val_f1:.4f}")
-    for k, acc in sorted(topk_results.items()):
-        print(f"Top-{k} accuracy: {acc:.4f}")
+    print(f"Balanced accuracy : {val_acc:.4f}")
+    print(f"Weighted F1       : {val_f1:.4f}")
+    print(f"Top-1 accuracy    : {topk_results[1]:.4f}")
 
-    # ── Classification report text file ──────────────────────────────────────
-    report_path = output_dir / f"classification_report{file_suffix}.txt"
+    report_path = output_dir / f"classification_report_top1{file_suffix}.txt"
     with open(report_path, "w") as f:
         f.write(report_header)
+        f.write("── Top-1 Classification Report ──\n\n")
         f.write(report_str)
-        f.write(f"\nVal accuracy : {val_acc:.4f}\n")
-        f.write(f"Val F1       : {val_f1:.4f}\n")
-        for k, acc in sorted(topk_results.items()):
-            f.write(f"Top-{k} accuracy: {acc:.4f}\n")
+        f.write(f"\nBalanced accuracy : {val_acc:.4f}\n")
+        f.write(f"Weighted F1       : {val_f1:.4f}\n")
+        f.write(f"Top-1 accuracy    : {topk_results[1]:.4f}\n")
     print(f"Report saved to    : {report_path}")
 
-    # ── Confusion matrix ─────────────────────────────────────────────────────
     cm = confusion_matrix(val_true, val_preds, labels=list(range(num_classes)))
-    fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.5), max(7, num_classes * 0.45)))
-    im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
-    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    ax.set(
-        xticks=range(num_classes),
-        yticks=range(num_classes),
-        xticklabels=classes,
-        yticklabels=classes,
-        ylabel="True label",
-        xlabel="Predicted label",
-        title=cm_title,
-    )
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    thresh = cm.max() / 2.0
-    for i in range(num_classes):
-        for j in range(num_classes):
-            ax.text(j, i, str(cm[i, j]),
-                    ha="center", va="center",
-                    color="white" if cm[i, j] > thresh else "black",
-                    fontsize=7)
-    fig.tight_layout()
-    cm_path = output_dir / f"confusion_matrix{file_suffix}.png"
-    fig.savefig(cm_path, dpi=150)
-    plt.close(fig)
+    cm_path = output_dir / f"confusion_matrix_top1{file_suffix}.png"
+    _plot_confusion_matrix(cm, classes, num_classes, f"{cm_title} (Top-1)", cm_path)
     print(f"Confusion matrix   : {cm_path}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Top-k reports & confusion matrices (k > 1)
+    # ══════════════════════════════════════════════════════════════════════════
+    for k, k_acc in sorted(topk_results.items()):
+        if k == 1:
+            continue
+
+        print(f"\n── Top-{k} Classification Report ──")
+        print(f"Top-{k} accuracy : {k_acc:.4f}")
+
+        # Per-class top-k accuracy report
+        class_acc = per_class_topk[k]
+        report_k_path = output_dir / f"classification_report_top{k}{file_suffix}.txt"
+        with open(report_k_path, "w") as f:
+            f.write(report_header)
+            f.write(f"── Top-{k} Classification Report ──\n\n")
+            f.write(f"Overall top-{k} accuracy : {k_acc:.4f}\n\n")
+            f.write(f"{'Class':<30s}  {'Top-'+str(k)+' Acc':>10s}  {'Support':>8s}\n")
+            f.write("-" * 52 + "\n")
+            for ci, cname in enumerate(classes):
+                support = int((val_true == ci).sum())
+                f.write(f"{cname:<30s}  {class_acc[cname]:>10.4f}  {support:>8d}\n")
+                print(f"  {cname:<30s}  top-{k} acc={class_acc[cname]:.4f}  (n={support})")
+        print(f"Report saved to    : {report_k_path}")
+
+        # Top-k confusion matrix
+        cm_k = _topk_confusion_matrix(val_true, val_probs, k, num_classes)
+        cm_k_path = output_dir / f"confusion_matrix_top{k}{file_suffix}.png"
+        _plot_confusion_matrix(cm_k, classes, num_classes, f"{cm_title} (Top-{k})", cm_k_path)
+        print(f"Confusion matrix   : {cm_k_path}")
+
+    # ── Summary of all top-k accuracies ───────────────────────────────────────
+    summary_path = output_dir / f"topk_summary{file_suffix}.txt"
+    with open(summary_path, "w") as f:
+        f.write(report_header)
+        f.write("── Top-k Accuracy Summary ──\n\n")
+        for k, acc in sorted(topk_results.items()):
+            f.write(f"Top-{k} accuracy : {acc:.4f}\n")
+    print(f"\nTop-k summary      : {summary_path}")
 
     # ── Predictions CSV ──────────────────────────────────────────────────────
     if save_predictions:
@@ -369,6 +461,12 @@ def save_results(
         }
         for cls_idx, cls_name in enumerate(classes):
             pred_rows[f"prob_{cls_name}"] = val_probs[:, cls_idx].tolist()
+        # Add top-k correctness columns
+        for k in sorted(topk_results):
+            if k == 1:
+                continue
+            topk_idx = _topk_predictions(val_probs, k)
+            pred_rows[f"correct_top{k}"] = [t in row for t, row in zip(val_true, topk_idx)]
 
         pred_df = pd.DataFrame(pred_rows)
         pred_path = output_dir / f"predictions{file_suffix}.csv"
