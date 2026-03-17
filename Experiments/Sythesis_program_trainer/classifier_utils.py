@@ -365,22 +365,6 @@ def save_results(
                 val_true, val_probs, k=k, labels=list(range(num_classes)),
             ))
 
-    # ── Per-class top-k accuracy ─────────────────────────────────────────────
-    per_class_topk: Dict[int, Dict[str, float]] = {}
-    for k in topk_results:
-        if k == 1:
-            continue
-        topk_idx = _topk_predictions(val_probs, k)
-        correct = np.array([t in row for t, row in zip(val_true, topk_idx)])
-        class_acc = {}
-        for ci, cname in enumerate(classes):
-            mask = val_true == ci
-            if mask.sum() == 0:
-                class_acc[cname] = 0.0
-            else:
-                class_acc[cname] = float(correct[mask].mean())
-        per_class_topk[k] = class_acc
-
     # ══════════════════════════════════════════════════════════════════════════
     # Top-1 report & confusion matrix
     # ══════════════════════════════════════════════════════════════════════════
@@ -418,22 +402,38 @@ def save_results(
         if k == 1:
             continue
 
-        print(f"\n── Top-{k} Classification Report ──")
-        print(f"Top-{k} accuracy : {k_acc:.4f}")
+        # Build top-k adjusted predictions: if true label is in top-k,
+        # count as correct (pred = true); otherwise use top-1 prediction.
+        topk_idx = _topk_predictions(val_probs, k)
+        topk_preds = np.array([
+            true if true in row else row[0]
+            for true, row in zip(val_true, topk_idx)
+        ])
 
-        # Per-class top-k accuracy report
-        class_acc = per_class_topk[k]
+        topk_acc = balanced_accuracy_score(val_true, topk_preds)
+        topk_f1 = f1_score(val_true, topk_preds, average="weighted", zero_division=0)
+
+        report_k_str = classification_report(
+            val_true, topk_preds,
+            labels=list(range(num_classes)),
+            target_names=classes,
+            zero_division=0,
+        )
+
+        print(f"\n── Top-{k} Classification Report ──")
+        print(report_k_str)
+        print(f"Balanced accuracy : {topk_acc:.4f}")
+        print(f"Weighted F1       : {topk_f1:.4f}")
+        print(f"Top-{k} accuracy    : {k_acc:.4f}")
+
         report_k_path = output_dir / f"classification_report_top{k}{file_suffix}.txt"
         with open(report_k_path, "w") as f:
             f.write(report_header)
             f.write(f"── Top-{k} Classification Report ──\n\n")
-            f.write(f"Overall top-{k} accuracy : {k_acc:.4f}\n\n")
-            f.write(f"{'Class':<30s}  {'Top-'+str(k)+' Acc':>10s}  {'Support':>8s}\n")
-            f.write("-" * 52 + "\n")
-            for ci, cname in enumerate(classes):
-                support = int((val_true == ci).sum())
-                f.write(f"{cname:<30s}  {class_acc[cname]:>10.4f}  {support:>8d}\n")
-                print(f"  {cname:<30s}  top-{k} acc={class_acc[cname]:.4f}  (n={support})")
+            f.write(report_k_str)
+            f.write(f"\nBalanced accuracy : {topk_acc:.4f}\n")
+            f.write(f"Weighted F1       : {topk_f1:.4f}\n")
+            f.write(f"Top-{k} accuracy    : {k_acc:.4f}\n")
         print(f"Report saved to    : {report_k_path}")
 
         # Top-k confusion matrix
