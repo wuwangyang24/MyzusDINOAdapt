@@ -37,6 +37,7 @@ Inputs
   --metadata     CSV / Excel file with at least two columns:
                     "compound"           (str)  — must match compound_id keys in .pt file
                     "synthesis_program"  (str)  — class label
+                    "Efficacy"           (float) — optional, only needed if using --filter_by_efficacy
 
 Usage examples
 --------------
@@ -183,6 +184,9 @@ def parse_args() -> argparse.Namespace:
                    help="Fraction of compounds used for validation (early stopping / tuning). Default: 0.2")
     p.add_argument("--test_split", type=float, default=0.2,
                    help="Fraction of compounds held out for final evaluation (not seen during training). Default: 0.15")
+    p.add_argument("--filter_by_efficacy", type=float, default=None,
+                   help="Keep only compounds whose 'Efficacy' column in metadata is >= this value. "
+                        "Requires an 'Efficacy' column in the metadata file.")
 
     # ---- ABMIL hyper-parameters ----
     p.add_argument("--abmil_hidden", type=int, default=128,
@@ -784,12 +788,21 @@ def main() -> None:
         df = pd.read_csv(meta_path)
 
     required_cols = {args.compound_col, args.label_col}
+    if args.filter_by_efficacy is not None:
+        required_cols.add("Efficacy")
     missing = required_cols - set(df.columns)
     if missing:
         raise ValueError(
             f"Metadata is missing column(s): {missing}. "
             f"Available columns: {list(df.columns)}"
         )
+
+    # ── Optional efficacy filtering ──────────────────────────────────────────
+    if args.filter_by_efficacy is not None:
+        before = len(df)
+        df = df[df["Efficacy"] >= args.filter_by_efficacy]
+        print(f"  Filtered by Efficacy >= {args.filter_by_efficacy}: "
+              f"{before} → {len(df)} compounds.")
 
     df = df[[args.compound_col, args.label_col]].dropna()
     print(f"  {len(df)} compound rows after dropping NaN.")
