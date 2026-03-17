@@ -205,8 +205,8 @@ def parse_args() -> argparse.Namespace:
                    help="Number of random search iterations. Default: 50")
 
     # ---- Misc ----
-    p.add_argument("--output_dir",  default="Experiments/runs/classifier",
-                   help="Directory for checkpoints and logs. Default: Experiments/runs/classifier")
+    p.add_argument("--output_dir",  default="Experiments/runs/SYNTHESIS_CLASSIFICATION",
+                   help="Directory for checkpoints and logs. Default: Experiments/runs/SYNTHESIS_CLASSIFICATION")
     p.add_argument("--model_name", default=None,
                    help="Model name for the output directory. Defaults to the stem of the input file.")
     p.add_argument("--device",      default=None,
