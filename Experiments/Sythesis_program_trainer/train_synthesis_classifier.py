@@ -762,7 +762,8 @@ def main() -> None:
     if not args.efficacy:
         subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
         output_dir = output_dir / subtract_dir
-    output_dir = output_dir / efficacy_dir
+    min_cpc_dir = f"minCPC{args.min_compounds_per_class}"
+    output_dir = output_dir / efficacy_dir / min_cpc_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────
