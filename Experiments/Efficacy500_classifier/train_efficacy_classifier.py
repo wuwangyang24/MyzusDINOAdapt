@@ -1,15 +1,16 @@
 """
 train_efficacy_classifier.py
 
-Train a binary classifier (XGBoost or Gated ABMIL) on embeddings_20ppm +
-efficacy.pt, then run inference on embeddings_100ppm and evaluate against
-efficacy_500ppm.
+Train a binary classifier (XGBoost, CatBoost, or Gated ABMIL) on
+embeddings_20ppm + efficacy.pt, then run inference on embeddings_100ppm
+and evaluate against efficacy_500ppm.
 
 Classifiers
 -----------
-  - xgboost : mean-pools instance embeddings per compound, then XGBoost.
-  - abmil   : Gated Attention-Based MIL — learns instance-level attention
-               weights over variable-length bags (no mean-pooling).
+  - xgboost  : mean-pools instance embeddings per compound, then XGBoost.
+  - catboost : mean-pools instance embeddings per compound, then CatBoost.
+  - abmil    : Gated Attention-Based MIL — learns instance-level attention
+                weights over variable-length bags (no mean-pooling).
 
 Workflow
 --------
@@ -23,6 +24,14 @@ Usage
   # XGBoost (default)
   python -m Experiments.Efficacy500_classifier.train_efficacy_classifier \\
       --classifier xgboost \\
+      --embeddings           Experiments/embeddings_20ppm.pt \\
+      --efficacy             Experiments/efficacy.pt \\
+      --inference_embeddings Experiments/embeddings_100ppm.pt \\
+      --inference_efficacy   Experiments/efficacy_500ppm.csv
+
+  # CatBoost
+  python -m Experiments.Efficacy500_classifier.train_efficacy_classifier \\
+      --classifier catboost \\
       --embeddings           Experiments/embeddings_20ppm.pt \\
       --efficacy             Experiments/efficacy.pt \\
       --inference_embeddings Experiments/embeddings_100ppm.pt \\
@@ -72,6 +81,12 @@ try:
 except ImportError:
     _HAS_XGBOOST = False
 
+try:
+    from catboost import CatBoostClassifier
+    _HAS_CATBOOST = True
+except ImportError:
+    _HAS_CATBOOST = False
+
 # ── project imports ──────────────────────────────────────────────────────────
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
@@ -94,7 +109,7 @@ from .classifier_utils import (
     infer_abmil,
     evaluate_and_report,
 )
-from .classifier_tuning import tune_abmil, tune_xgboost
+from .classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -111,9 +126,9 @@ def parse_args() -> argparse.Namespace:
     # ── Classifier choice ──
     p.add_argument(
         "--classifier",
-        choices=["xgboost", "abmil"],
+        choices=["xgboost", "catboost", "abmil"],
         default="xgboost",
-        help="Classifier to use: 'xgboost' (mean-pooled) or 'abmil' (gated attention MIL) (default: xgboost)",
+        help="Classifier to use: 'xgboost', 'catboost' (mean-pooled) or 'abmil' (gated attention MIL) (default: xgboost)",
     )
 
     # ── Training data ──
@@ -185,6 +200,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--xgb_reg_alpha", type=float, default=0.0, help="XGBoost L1 reg (default: 0)")
     p.add_argument("--xgb_reg_lambda", type=float, default=5.0, help="XGBoost L2 reg (default: 5.0)")
     p.add_argument("--xgb_early_stopping", type=int, default=20, help="XGBoost early stopping (default: 20)")
+
+    # ── CatBoost hyper-parameters ──
+    p.add_argument("--cb_iterations", type=int, default=2000, help="CatBoost iterations (default: 2000)")
+    p.add_argument("--cb_depth", type=int, default=8, help="CatBoost tree depth (default: 8)")
+    p.add_argument("--cb_learning_rate", type=float, default=0.03, help="CatBoost lr (default: 0.03)")
+    p.add_argument("--cb_l2_leaf_reg", type=float, default=5.0, help="CatBoost L2 regularisation (default: 5.0)")
+    p.add_argument("--cb_subsample", type=float, default=0.8, help="CatBoost row subsample (default: 0.8)")
+    p.add_argument("--cb_rsm", type=float, default=0.7, help="CatBoost random subspace method / col subsample (default: 0.7)")
+    p.add_argument("--cb_early_stopping", type=int, default=50, help="CatBoost early stopping rounds (default: 50)")
 
     # ── ABMIL hyper-parameters ──
     p.add_argument("--abmil_hidden", type=int, default=256, help="ABMIL attention hidden dim (default: 256)")
@@ -373,6 +397,115 @@ def _run_xgboost(
     return inf_preds, inf_proba, y_inf, cids_inf, "XGBoost"
 
 
+def _run_catboost(
+    embeddings: Dict,
+    cid2label: Dict[str, int],
+    inf_embeddings: Dict,
+    inf_cid2label: Dict[str, int],
+    args: argparse.Namespace,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
+    """Train CatBoost, run inference, return (preds, proba, y_true, cids, label)."""
+    # ── Build training features ──────────────────────────────────────────
+    X_train, y_train, _ = build_mean_latent_features(
+        embeddings, cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    print(f"  {X_train.shape[0]} training compounds, feature dim {X_train.shape[1]}.")
+
+    if X_train.shape[0] == 0:
+        raise RuntimeError("No compounds matched between embeddings and efficacy.")
+
+    # ── Optionally balance training set (undersample majority) ───────────
+    if args.balance:
+        active_idx = np.where(y_train == 1)[0]
+        inactive_idx = np.where(y_train == 0)[0]
+        n_minority = min(len(active_idx), len(inactive_idx))
+        rng = np.random.RandomState(args.seed)
+        active_sampled = rng.choice(active_idx, size=n_minority, replace=False)
+        inactive_sampled = rng.choice(inactive_idx, size=n_minority, replace=False)
+        balanced_idx = np.sort(np.concatenate([active_sampled, inactive_sampled]))
+        X_train = X_train[balanced_idx]
+        y_train = y_train[balanced_idx]
+        print(f"  Balanced training set: {n_minority} active + {n_minority} inactive = {len(y_train)} compounds.")
+
+    # ── CatBoost parameters (defaults or from CLI) ───────────────────────
+    cb_params = dict(
+        iterations=args.cb_iterations,
+        depth=args.cb_depth,
+        learning_rate=args.cb_learning_rate,
+        l2_leaf_reg=args.cb_l2_leaf_reg,
+        subsample=args.cb_subsample,
+        rsm=args.cb_rsm,
+    )
+
+    # ── Optionally use scale_pos_weight ──────────────────────────────────
+    if args.scale_pos_weight:
+        n_pos = int(y_train.sum())
+        n_neg = len(y_train) - n_pos
+        if n_pos > 0:
+            spw = n_neg / n_pos
+            cb_params["scale_pos_weight"] = spw
+            print(f"  CatBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
+
+    # ── Optional hyperparameter tuning ───────────────────────────────────
+    if args.tune:
+        cb_params = tune_catboost(X_train, y_train, args)
+
+    # ── 5-Fold Cross Validation ──────────────────────────────────────────
+    print("\n5-Fold Cross Validation on training data ...")
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    fold_accs, fold_f1s, fold_aurocs = [], [], []
+
+    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
+        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+
+        fold_clf = CatBoostClassifier(
+            **cb_params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=args.seed,
+            verbose=0,
+            early_stopping_rounds=args.cb_early_stopping,
+        )
+        fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
+
+        va_preds = fold_clf.predict(X_va).astype(int).ravel()
+        va_proba = fold_clf.predict_proba(X_va)[:, 1]
+        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
+        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
+        fold_aurocs.append(roc_auc_score(y_va, va_proba))
+        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
+
+    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
+          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
+          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
+
+    # ── Train final model on all training data ───────────────────────────
+    clf = CatBoostClassifier(
+        **cb_params,
+        loss_function="Logloss",
+        eval_metric="AUC",
+        random_seed=args.seed,
+        verbose=500,
+        early_stopping_rounds=args.cb_early_stopping,
+    )
+    print(f"\nTraining final CatBoost on all {X_train.shape[0]} training compounds ...")
+    clf.fit(X_train, y_train, eval_set=(X_train, y_train), verbose=500)
+    print("Training done.\n")
+
+    # ── Inference features ───────────────────────────────────────────────
+    X_inf, y_inf, cids_inf = build_mean_latent_features(
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
+    if X_inf.shape[0] == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
+    inf_preds = clf.predict(X_inf).astype(int).ravel()
+    inf_proba = clf.predict_proba(X_inf)[:, 1]
+    return inf_preds, inf_proba, y_inf, cids_inf, "CatBoost"
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -383,6 +516,8 @@ def main() -> None:
 
     if args.classifier == "xgboost" and not _HAS_XGBOOST:
         raise ImportError("xgboost is required. Install it with:  pip install xgboost")
+    if args.classifier == "catboost" and not _HAS_CATBOOST:
+        raise ImportError("catboost is required. Install it with:  pip install catboost")
 
     # ── Reproducibility ──────────────────────────────────────────────────
     np.random.seed(args.seed)
@@ -421,6 +556,10 @@ def main() -> None:
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_abmil(
             embeddings, cid2label, inf_embeddings, inf_cid2label, args, device,
             output_dir=output_dir,
+        )
+    elif args.classifier == "catboost":
+        inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_catboost(
+            embeddings, cid2label, inf_embeddings, inf_cid2label, args,
         )
     else:
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_xgboost(

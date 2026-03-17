@@ -6,6 +6,7 @@ Pillow>=9.0
 numpy>=1.23.0
 pandas>=1.5.0
 scikit-learn>=1.2.0
+catboost>=1.2.0
 tensorboard>=2.12.0
 wandb>=0.15.0
 tqdm>=4.65.0

@@ -22,6 +22,12 @@ try:
 except ImportError:
     _HAS_XGBOOST = False
 
+try:
+    from catboost import CatBoostClassifier
+    _HAS_CATBOOST = True
+except ImportError:
+    _HAS_CATBOOST = False
+
 from .classifier_utils import GatedABMIL, train_abmil, infer_abmil
 
 
@@ -148,6 +154,63 @@ def tune_xgboost(
             tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1,
         )
         mean_score = scores.mean()
+        if mean_score > best_score:
+            best_score = mean_score
+            best_params = params
+
+    print(f"  Best AUROC: {best_score:.4f}")
+    print(f"  Best params: {best_params}")
+    return dict(best_params)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3.  CatBoost tuning
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def tune_catboost(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    args: argparse.Namespace,
+) -> Dict:
+    """Random search over CatBoost hyperparameters, return best config."""
+    if not _HAS_CATBOOST:
+        raise ImportError("catboost is required for tuning. Install with: pip install catboost")
+
+    param_distributions = {
+        "iterations": [500, 1000, 2000],
+        "depth": [4, 6, 8, 10],
+        "learning_rate": [0.01, 0.03, 0.05, 0.1],
+        "l2_leaf_reg": [1.0, 3.0, 5.0, 7.0],
+        "subsample": [0.7, 0.8, 1.0],
+        "rsm": [0.7, 0.8, 1.0],
+    }
+
+    print(f"\nCatBoost hyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    param_list = list(ParameterSampler(
+        param_distributions, n_iter=args.tune_iter, random_state=args.seed,
+    ))
+    best_score, best_params = -1, None
+
+    for params in tqdm(param_list, desc="Tuning CatBoost"):
+        scores = []
+        for tr_idx, va_idx in cv.split(X_train, y_train):
+            X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+            y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+            tmp_clf = CatBoostClassifier(
+                **params,
+                loss_function="Logloss",
+                eval_metric="AUC",
+                random_seed=args.seed,
+                verbose=0,
+                early_stopping_rounds=50,
+            )
+            tmp_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
+            va_proba = tmp_clf.predict_proba(X_va)[:, 1]
+            scores.append(roc_auc_score(y_va, va_proba))
+        mean_score = np.mean(scores)
         if mean_score > best_score:
             best_score = mean_score
             best_params = params
