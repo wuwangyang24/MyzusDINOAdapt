@@ -757,9 +757,12 @@ def main() -> None:
     else:
         input_path = args.efficacy if args.efficacy else args.embeddings
         model_name = Path(input_path).stem if input_path else "unknown_model"
-    subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
     efficacy_dir = f"EfficacyAbove{args.filter_by_efficacy:g}" if args.filter_by_efficacy is not None else "no_efficacy_filter"
-    output_dir = Path(args.output_dir) / date_str / model_name / args.classifier / subtract_dir / efficacy_dir
+    output_dir = Path(args.output_dir) / date_str / model_name / args.classifier
+    if not args.efficacy:
+        subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
+        output_dir = output_dir / subtract_dir
+    output_dir = output_dir / efficacy_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────
