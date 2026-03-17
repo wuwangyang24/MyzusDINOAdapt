@@ -19,6 +19,7 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import (
     balanced_accuracy_score, f1_score, classification_report, confusion_matrix,
+    top_k_accuracy_score,
 )
 from tqdm import tqdm
 import matplotlib
@@ -288,10 +289,23 @@ def save_results(
     file_suffix: str,
     report_header: str,
     save_predictions: bool,
+    topk: Tuple[int, ...] = (1, 3, 5),
 ) -> None:
-    """Save classification report, confusion matrix, and (optionally) predictions CSV."""
+    """Save classification report, confusion matrix, top-k accuracies, and (optionally) predictions CSV."""
     val_acc = balanced_accuracy_score(val_true, val_preds)
     val_f1 = f1_score(val_true, val_preds, average="weighted", zero_division=0)
+
+    # ── Top-k accuracies ─────────────────────────────────────────────────────
+    topk_results = {}
+    for k in topk:
+        if k > num_classes:
+            continue
+        if k == 1:
+            topk_results[k] = (val_preds == val_true).mean()
+        else:
+            topk_results[k] = top_k_accuracy_score(
+                val_true, val_probs, k=k, labels=list(range(num_classes)),
+            )
 
     report_str = classification_report(
         val_true, val_preds,
@@ -303,6 +317,8 @@ def save_results(
     print(report_str)
     print(f"Val accuracy : {val_acc:.4f}")
     print(f"Val F1       : {val_f1:.4f}")
+    for k, acc in sorted(topk_results.items()):
+        print(f"Top-{k} accuracy: {acc:.4f}")
 
     # ── Classification report text file ──────────────────────────────────────
     report_path = output_dir / f"classification_report{file_suffix}.txt"
@@ -311,6 +327,8 @@ def save_results(
         f.write(report_str)
         f.write(f"\nVal accuracy : {val_acc:.4f}\n")
         f.write(f"Val F1       : {val_f1:.4f}\n")
+        for k, acc in sorted(topk_results.items()):
+            f.write(f"Top-{k} accuracy: {acc:.4f}\n")
     print(f"Report saved to    : {report_path}")
 
     # ── Confusion matrix ─────────────────────────────────────────────────────

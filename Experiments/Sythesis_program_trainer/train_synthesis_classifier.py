@@ -107,8 +107,9 @@ Output
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import warnings
 
@@ -211,6 +212,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed",        type=int, default=42, help="Random seed. Default: 42")
     p.add_argument("--save_predictions", action="store_true",
                    help="Save validation predictions + ground truth to predictions.csv")
+    p.add_argument("--topk", type=int, nargs="+", default=[1, 3, 5],
+                   help="Top-k values for classification accuracy. Default: 1 3 5")
 
     p.add_argument("--min_compounds_per_class", type=int, default=2,
                    help="Drop synthesis programs with fewer compounds than this. Default: 2")
@@ -356,6 +359,7 @@ def _run_abmil(
             f"Normalize before subtract : {args.normalize_before_subtract}\n\n"
         ),
         save_predictions=args.save_predictions,
+        topk=tuple(args.topk),
     )
 
 
@@ -519,6 +523,7 @@ def _run_xgboost(
             f"Normalize before subtract : {args.normalize_before_subtract}\n\n"
         ),
         save_predictions=args.save_predictions,
+        topk=tuple(args.topk),
     )
 
     # ── Save model ───────────────────────────────────────────────────────────
@@ -701,6 +706,7 @@ def _run_catboost(
             f"Auto class weights : {auto_cw}\n\n"
         ),
         save_predictions=args.save_predictions,
+        topk=tuple(args.topk),
     )
 
     # ── Save model ───────────────────────────────────────────────────────────
@@ -739,7 +745,9 @@ def main() -> None:
     print(f"Device : {device}")
 
     # ── Output directory ─────────────────────────────────────────────────────
-    output_dir = Path(args.output_dir) / args.classifier
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    subtract_dir = "subtract_control" if args.subtract_control else "no_subtract_control"
+    output_dir = Path(args.output_dir) / timestamp / args.classifier / subtract_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Validate inputs ──────────────────────────────────────────────────────
