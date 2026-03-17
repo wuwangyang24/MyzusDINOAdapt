@@ -230,8 +230,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--output_dir",
-        default="Experiments/runs/efficacy_classifier",
-        help="Output directory (default: Experiments/runs/efficacy_classifier)",
+        default="Experiments/runs/EFFICACY_CLASSIFIER",
+        help="Output directory (default: Experiments/runs/EFFICACY_CLASSIFIER)",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
 
@@ -525,7 +525,8 @@ def main() -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    output_dir = Path(args.output_dir) / args.model_name / args.classifier
+    subtract_suffix = "subtract_control" if args.subtract_control else "no_subtract"
+    output_dir = Path(args.output_dir) / args.model_name / args.classifier / subtract_suffix
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Load training data ───────────────────────────────────────────────
