@@ -28,7 +28,10 @@ try:
 except ImportError:
     _HAS_CATBOOST = False
 
-from .classifier_utils import GatedABMIL, train_abmil, infer_abmil
+try:
+    from .classifier_utils import GatedABMIL, train_abmil, infer_abmil
+except ImportError:
+    from classifier_utils import GatedABMIL, train_abmil, infer_abmil
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

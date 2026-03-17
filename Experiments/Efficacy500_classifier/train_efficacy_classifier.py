@@ -99,17 +99,30 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedKFold
 
-from .classifier_utils import (
-    load_efficacy,
-    binarize_efficacy,
-    load_inference_labels,
-    build_mil_bags,
-    build_mean_latent_features,
-    train_abmil,
-    infer_abmil,
-    evaluate_and_report,
-)
-from .classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
+try:
+    from .classifier_utils import (
+        load_efficacy,
+        binarize_efficacy,
+        load_inference_labels,
+        build_mil_bags,
+        build_mean_latent_features,
+        train_abmil,
+        infer_abmil,
+        evaluate_and_report,
+    )
+    from .classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
+except ImportError:
+    from classifier_utils import (
+        load_efficacy,
+        binarize_efficacy,
+        load_inference_labels,
+        build_mil_bags,
+        build_mean_latent_features,
+        train_abmil,
+        infer_abmil,
+        evaluate_and_report,
+    )
+    from classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
