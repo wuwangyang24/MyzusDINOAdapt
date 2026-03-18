@@ -464,28 +464,47 @@ def _run_logsumexp(
     num_classes = len(classes)
     print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
 
-    # ── Train / val / test split ─────────────────────────────────────────────
+    # ── Train / (val) / test split ──────────────────────────────────────────
+    use_early_stopping = args.lse_patience > 0
     n_total = len(bags)
     n_test = max(1, int(n_total * args.test_split))
-    n_val = max(1, int(n_total * args.val_split))
-    n_train = n_total - n_val - n_test
-    if n_train < 1:
-        raise RuntimeError(f"Not enough data for 3-way split: {n_total} total, need at least 3.")
-    indices = np.random.permutation(n_total)
-    train_idx = indices[:n_train]
-    val_idx = indices[n_train:n_train + n_val]
-    test_idx = indices[n_train + n_val:]
 
-    train_bags   = [bags[i] for i in train_idx]
-    train_labels = [labels[i] for i in train_idx]
-    val_bags     = [bags[i] for i in val_idx]
-    val_labels   = [labels[i] for i in val_idx]
-    test_bags    = [bags[i] for i in test_idx]
-    test_labels  = [labels[i] for i in test_idx]
-    test_cids    = [cids[i] for i in test_idx]
-    print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
+    if use_early_stopping:
+        n_val = max(1, int(n_total * args.val_split))
+        n_train = n_total - n_val - n_test
+        if n_train < 1:
+            raise RuntimeError(f"Not enough data for 3-way split: {n_total} total, need at least 3.")
+        indices = np.random.permutation(n_total)
+        train_idx = indices[:n_train]
+        val_idx = indices[n_train:n_train + n_val]
+        test_idx = indices[n_train + n_val:]
 
-    # ── Train on train set (val used for early stopping) ─────────────────────
+        train_bags   = [bags[i] for i in train_idx]
+        train_labels = [labels[i] for i in train_idx]
+        val_bags     = [bags[i] for i in val_idx]
+        val_labels   = [labels[i] for i in val_idx]
+        test_bags    = [bags[i] for i in test_idx]
+        test_labels  = [labels[i] for i in test_idx]
+        test_cids    = [cids[i] for i in test_idx]
+        print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
+    else:
+        n_train = n_total - n_test
+        if n_train < 1:
+            raise RuntimeError(f"Not enough data for 2-way split: {n_total} total, need at least 2.")
+        indices = np.random.permutation(n_total)
+        train_idx = indices[:n_train]
+        test_idx = indices[n_train:]
+
+        train_bags   = [bags[i] for i in train_idx]
+        train_labels = [labels[i] for i in train_idx]
+        val_bags     = None
+        val_labels   = None
+        test_bags    = [bags[i] for i in test_idx]
+        test_labels  = [labels[i] for i in test_idx]
+        test_cids    = [cids[i] for i in test_idx]
+        print(f"  Train: {n_train}  |  Test: {n_test}  (no val split, early stopping disabled)")
+
+    # ── Train on train set (val used for early stopping if enabled) ──────────
     model = train_logsumexp(train_bags, train_labels, num_classes, args, device,
                              class_weights=args.lse_class_weights,
                              oversample=args.lse_oversample,
