@@ -552,10 +552,13 @@ def train_logsumexp(
 
         # ── Periodic test-set evaluation ──────────────────────────────────────
         if use_test_eval and (epoch + 1) % eval_interval == 0:
-            test_preds, _ = infer_logsumexp(model, test_bags, device)
+            test_preds, test_probs = infer_logsumexp(model, test_bags, device)
             test_true = np.array(test_labels)
             test_acc = (test_preds == test_true).mean()
-            print(f"    [test @ epoch {epoch+1}]  accuracy={test_acc:.4f}  "
+            # top-3 accuracy
+            top3 = np.argsort(test_probs, axis=1)[:, -3:]
+            top3_acc = np.mean([test_true[i] in top3[i] for i in range(len(test_true))])
+            print(f"    [test @ epoch {epoch+1}]  top1={test_acc:.4f}  top3={top3_acc:.4f}  "
                   f"({(test_preds == test_true).sum()}/{len(test_true)})")
             model.train()  # switch back to train mode
 
