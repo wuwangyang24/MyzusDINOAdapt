@@ -98,6 +98,21 @@ Usage examples
       --classifier       catboost \\
       --tune --tune_iter 50
 
+  # LogSumExp MIL (default hyper-parameters)
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings Experiments/embeddings.pt \\
+      --metadata   data/compound_metadata.csv \\
+      --classifier logsumexp
+
+  # LogSumExp MIL with control subtraction and custom hyper-parameters
+  python Experiments/train_synthesis_classifier.py \\
+      --embeddings       Experiments/embeddings.pt \\
+      --metadata         data/compound_metadata.csv \\
+      --classifier       logsumexp \\
+      --subtract_control \\
+      --lse_hidden 128 --lse_dropout 0.25 \\
+      --lse_epochs 200 --lse_lr 1e-3 --lse_r_init 5.0
+
 Output
 ------
   <output_dir>/
