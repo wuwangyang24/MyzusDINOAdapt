@@ -262,6 +262,8 @@ def parse_args() -> argparse.Namespace:
                    help="Class-balanced oversampling: each epoch sees equal samples per class")
     p.add_argument("--lse_focal_gamma", type=float, default=0.0,
                    help="Focal loss gamma (0 = standard CE, 2 = recommended for imbalance). Default: 0.0")
+    p.add_argument("--lse_patience", type=int, default=0,
+                   help="Early stopping patience (0 = disabled). Requires val split. Default: 0")
 
     # ---- Classifier selection ----
     p.add_argument("--classifier", choices=["abmil", "logsumexp", "xgboost", "catboost"],
@@ -483,13 +485,14 @@ def _run_logsumexp(
     test_cids    = [cids[i] for i in test_idx]
     print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
 
-    # ── Train on train+val ───────────────────────────────────────────────────
-    trainval_bags   = train_bags + val_bags
-    trainval_labels = train_labels + val_labels
-    model = train_logsumexp(trainval_bags, trainval_labels, num_classes, args, device,
+    # ── Train on train set (val used for early stopping) ─────────────────────
+    model = train_logsumexp(train_bags, train_labels, num_classes, args, device,
                              class_weights=args.lse_class_weights,
                              oversample=args.lse_oversample,
-                             focal_gamma=args.lse_focal_gamma)
+                             focal_gamma=args.lse_focal_gamma,
+                             val_bags=val_bags,
+                             val_labels=val_labels,
+                             patience=args.lse_patience)
 
     # ── Save model ──────────────────────────────────────────────────────────
     torch.save(model.state_dict(), output_dir / "best_model.pt")

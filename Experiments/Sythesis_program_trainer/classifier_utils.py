@@ -412,6 +412,25 @@ class LogSumExpMIL(nn.Module):
         return logits
 
 
+def _eval_loss(
+    model: LogSumExpMIL,
+    bags: List[torch.Tensor],
+    labels: List[int],
+    criterion: nn.Module,
+    device: torch.device,
+) -> float:
+    """Compute mean loss over a bag dataset (no gradient)."""
+    model.eval()
+    total, n = 0.0, 0
+    with torch.no_grad():
+        for i, bag in enumerate(bags):
+            logits = model(bag.to(device))
+            label = torch.tensor(labels[i], dtype=torch.long, device=device)
+            total += criterion(logits.unsqueeze(0), label.unsqueeze(0)).item()
+            n += 1
+    return total / max(n, 1)
+
+
 def train_logsumexp(
     bags: List[torch.Tensor],
     labels: List[int],
@@ -421,9 +440,19 @@ def train_logsumexp(
     class_weights: str = "none",
     oversample: bool = False,
     focal_gamma: float = 0.0,
+    val_bags: List[torch.Tensor] = None,
+    val_labels: List[int] = None,
+    patience: int = 0,
 ) -> LogSumExpMIL:
-    """Train LogSumExpMIL on all data, return trained model."""
+    """Train LogSumExpMIL, return trained model.
+
+    If *val_bags* / *val_labels* are provided the validation loss is
+    tracked every epoch and printed.  When *patience* > 0, training
+    stops early if the validation loss does not improve for *patience*
+    consecutive epochs and the best weights are restored.
+    """
     input_dim = bags[0].shape[1]
+    use_val = val_bags is not None and val_labels is not None and len(val_bags) > 0
 
     torch.manual_seed(args.seed)
     model = LogSumExpMIL(
@@ -458,13 +487,23 @@ def train_logsumexp(
     if oversample:
         print("  Class-balanced oversampling enabled")
 
+    # ── Early stopping state ────────────────────────────────────────────────
+    best_val_loss = float("inf")
+    best_state = None
+    wait = 0
+    best_epoch = 0
+    do_early_stop = use_val and patience > 0
+    if do_early_stop:
+        print(f"  Early stopping: patience={patience}")
+
     print(f"\nTraining LogSumExp MIL on {len(bags)} compounds ({num_classes} classes) ...")
-    for epoch in tqdm(range(args.lse_epochs), desc="LogSumExp Training"):
+    for epoch in range(args.lse_epochs):
         model.train()
         if oversample:
             indices = _balanced_epoch_indices(labels, num_classes, rng)
         else:
             indices = rng.permutation(len(bags))
+        epoch_loss = 0.0
         for i in indices:
             bag = bags[i].to(device)
             label = torch.tensor(labels[i], dtype=torch.long, device=device)
@@ -473,6 +512,39 @@ def train_logsumexp(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            epoch_loss += loss.item()
+        train_loss = epoch_loss / len(indices)
+
+        # ── Validation loss ───────────────────────────────────────────────────
+        if use_val:
+            val_loss = _eval_loss(model, val_bags, val_labels, criterion, device)
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(f"  Epoch {epoch+1:>4d}/{args.lse_epochs}  "
+                      f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  "
+                      f"r={model.log_r.exp().item():.3f}")
+            # early stopping check
+            if do_early_stop:
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    best_epoch = epoch + 1
+                    wait = 0
+                else:
+                    wait += 1
+                    if wait >= patience:
+                        print(f"  Early stopping at epoch {epoch+1} "
+                              f"(best val_loss={best_val_loss:.4f} at epoch {best_epoch})")
+                        break
+        else:
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(f"  Epoch {epoch+1:>4d}/{args.lse_epochs}  "
+                      f"train_loss={train_loss:.4f}  "
+                      f"r={model.log_r.exp().item():.3f}")
+
+    # ── Restore best weights ────────────────────────────────────────────────
+    if do_early_stop and best_state is not None:
+        model.load_state_dict(best_state)
+        print(f"  Restored best model from epoch {best_epoch}")
 
     print("Training done.\n")
     return model
