@@ -443,6 +443,9 @@ def train_logsumexp(
     val_bags: List[torch.Tensor] = None,
     val_labels: List[int] = None,
     patience: int = 0,
+    test_bags: List[torch.Tensor] = None,
+    test_labels: List[int] = None,
+    eval_interval: int = 0,
 ) -> LogSumExpMIL:
     """Train LogSumExpMIL, return trained model.
 
@@ -496,6 +499,12 @@ def train_logsumexp(
     if do_early_stop:
         print(f"  Early stopping: patience={patience}")
 
+    # ── Periodic test evaluation setup ───────────────────────────────────────
+    use_test_eval = (test_bags is not None and test_labels is not None
+                     and len(test_bags) > 0 and eval_interval > 0)
+    if use_test_eval:
+        print(f"  Test evaluation every {eval_interval} epoch(s)")
+
     print(f"\nTraining LogSumExp MIL on {len(bags)} compounds ({num_classes} classes) ...")
     for epoch in range(args.lse_epochs):
         model.train()
@@ -540,6 +549,15 @@ def train_logsumexp(
                 print(f"  Epoch {epoch+1:>4d}/{args.lse_epochs}  "
                       f"train_loss={train_loss:.4f}  "
                       f"r={model.log_r.exp().item():.3f}")
+
+        # ── Periodic test-set evaluation ──────────────────────────────────────
+        if use_test_eval and (epoch + 1) % eval_interval == 0:
+            test_preds, _ = infer_logsumexp(model, test_bags, device)
+            test_true = np.array(test_labels)
+            test_acc = (test_preds == test_true).mean()
+            print(f"    [test @ epoch {epoch+1}]  accuracy={test_acc:.4f}  "
+                  f"({(test_preds == test_true).sum()}/{len(test_true)})")
+            model.train()  # switch back to train mode
 
     # ── Restore best weights ────────────────────────────────────────────────
     if do_early_stop and best_state is not None:

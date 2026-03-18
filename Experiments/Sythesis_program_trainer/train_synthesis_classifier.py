@@ -245,14 +245,14 @@ def parse_args() -> argparse.Namespace:
     # ---- LogSumExp MIL hyper-parameters ----
     p.add_argument("--lse_hidden", type=int, default=128,
                    help="LogSumExp MIL hidden dim. Default: 128")
-    p.add_argument("--lse_dropout", type=float, default=0.25,
-                   help="LogSumExp MIL dropout. Default: 0.25")
-    p.add_argument("--lse_lr", type=float, default=1e-3,
-                   help="LogSumExp MIL learning rate. Default: 1e-3")
+    p.add_argument("--lse_dropout", type=float, default=0.,
+                   help="LogSumExp MIL dropout. Default: 0.")
+    p.add_argument("--lse_lr", type=float, default=5e-4,
+                   help="LogSumExp MIL learning rate. Default: 5e-4")
     p.add_argument("--lse_wd", type=float, default=1e-4,
                    help="LogSumExp MIL weight decay. Default: 1e-4")
-    p.add_argument("--lse_epochs", type=int, default=200,
-                   help="LogSumExp MIL training epochs. Default: 200")
+    p.add_argument("--lse_epochs", type=int, default=500,
+                   help="LogSumExp MIL training epochs. Default: 500")
     p.add_argument("--lse_r_init", type=float, default=1.0,
                    help="LogSumExp MIL initial r (temperature). Default: 1.0")
     p.add_argument("--lse_class_weights", choices=["none", "balanced", "sqrt_balanced"],
@@ -260,10 +260,12 @@ def parse_args() -> argparse.Namespace:
                    help="LogSumExp MIL class weighting for imbalanced data. Default: balanced")
     p.add_argument("--lse_oversample", action="store_true",
                    help="Class-balanced oversampling: each epoch sees equal samples per class")
-    p.add_argument("--lse_focal_gamma", type=float, default=0.0,
-                   help="Focal loss gamma (0 = standard CE, 2 = recommended for imbalance). Default: 0.0")
+    p.add_argument("--lse_focal_gamma", type=float, default=1.0,
+                   help="Focal loss gamma (0 = standard CE, 2 = recommended for imbalance). Default: 1.0")
     p.add_argument("--lse_patience", type=int, default=0,
                    help="Early stopping patience (0 = disabled). Requires val split. Default: 0")
+    p.add_argument("--lse_eval_interval", type=int, default=0,
+                   help="Run test-set evaluation every N epochs during training (0 = disabled). Default: 0")
 
     # ---- Classifier selection ----
     p.add_argument("--classifier", choices=["abmil", "logsumexp", "xgboost", "catboost"],
@@ -511,7 +513,10 @@ def _run_logsumexp(
                              focal_gamma=args.lse_focal_gamma,
                              val_bags=val_bags,
                              val_labels=val_labels,
-                             patience=args.lse_patience)
+                             patience=args.lse_patience,
+                             test_bags=test_bags,
+                             test_labels=test_labels,
+                             eval_interval=args.lse_eval_interval)
 
     # ── Save model ──────────────────────────────────────────────────────────
     torch.save(model.state_dict(), output_dir / "best_model.pt")
