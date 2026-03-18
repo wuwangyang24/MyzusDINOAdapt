@@ -258,6 +258,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lse_class_weights", choices=["none", "balanced", "sqrt_balanced"],
                    default="balanced",
                    help="LogSumExp MIL class weighting for imbalanced data. Default: balanced")
+    p.add_argument("--lse_oversample", action="store_true",
+                   help="Class-balanced oversampling: each epoch sees equal samples per class")
+    p.add_argument("--lse_focal_gamma", type=float, default=0.0,
+                   help="Focal loss gamma (0 = standard CE, 2 = recommended for imbalance). Default: 0.0")
 
     # ---- Classifier selection ----
     p.add_argument("--classifier", choices=["abmil", "logsumexp", "xgboost", "catboost"],
@@ -483,7 +487,9 @@ def _run_logsumexp(
     trainval_bags   = train_bags + val_bags
     trainval_labels = train_labels + val_labels
     model = train_logsumexp(trainval_bags, trainval_labels, num_classes, args, device,
-                             class_weights=args.lse_class_weights)
+                             class_weights=args.lse_class_weights,
+                             oversample=args.lse_oversample,
+                             focal_gamma=args.lse_focal_gamma)
 
     # ── Save model ──────────────────────────────────────────────────────────
     torch.save(model.state_dict(), output_dir / "best_model.pt")
@@ -508,6 +514,8 @@ def _run_logsumexp(
             f"Subtract control : {args.subtract_control}\n"
             f"Normalize before subtract : {args.normalize_before_subtract}\n"
             f"Class weights    : {args.lse_class_weights}\n"
+            f"Oversample       : {args.lse_oversample}\n"
+            f"Focal gamma      : {args.lse_focal_gamma}\n"
             f"r (learned)      : {model.log_r.exp().item():.4f}\n\n"
         ),
         save_predictions=args.save_predictions,

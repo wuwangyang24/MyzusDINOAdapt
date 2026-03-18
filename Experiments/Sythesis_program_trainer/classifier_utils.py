@@ -296,6 +296,65 @@ def compute_class_weights(
     return torch.tensor(w, dtype=torch.float32)
 
 
+class FocalLoss(nn.Module):
+    """Focal Loss (Lin et al., 2017) with optional per-class weights.
+
+    FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
+
+    gamma > 0 reduces the loss for well-classified examples, forcing the
+    model to focus on hard / minority samples.
+    """
+
+    def __init__(
+        self,
+        weight: torch.Tensor = None,
+        gamma: float = 2.0,
+        label_smoothing: float = 0.0,
+    ):
+        super().__init__()
+        self.register_buffer("weight", weight)
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce = nn.functional.cross_entropy(
+            logits, targets,
+            weight=self.weight,
+            label_smoothing=self.label_smoothing,
+            reduction="none",
+        )
+        pt = torch.exp(-ce)  # p_t for the true class
+        return ((1 - pt) ** self.gamma * ce).mean()
+
+
+def _balanced_epoch_indices(
+    labels: List[int],
+    num_classes: int,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    """Return shuffled indices that oversample minority classes.
+
+    Each class contributes *max_count* samples (with replacement for
+    minority classes), so every class is seen equally often per epoch.
+    """
+    per_class: Dict[int, List[int]] = {c: [] for c in range(num_classes)}
+    for idx, lab in enumerate(labels):
+        per_class[lab].append(idx)
+
+    max_count = max(len(v) for v in per_class.values())
+    epoch_indices = []
+    for c in range(num_classes):
+        members = per_class[c]
+        if len(members) == 0:
+            continue
+        if len(members) >= max_count:
+            epoch_indices.extend(rng.choice(members, size=max_count, replace=False))
+        else:
+            epoch_indices.extend(rng.choice(members, size=max_count, replace=True))
+    rng.shuffle(epoch_indices)
+    return np.array(epoch_indices)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2b. Model — LogSumExp MIL
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -360,6 +419,8 @@ def train_logsumexp(
     args: argparse.Namespace,
     device: torch.device,
     class_weights: str = "none",
+    oversample: bool = False,
+    focal_gamma: float = 0.0,
 ) -> LogSumExpMIL:
     """Train LogSumExpMIL on all data, return trained model."""
     input_dim = bags[0].shape[1]
@@ -373,19 +434,37 @@ def train_logsumexp(
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lse_lr, weight_decay=args.lse_wd)
 
-    # ── Class-weight-aware loss ──────────────────────────────────────────────
+    # ── Loss function ───────────────────────────────────────────────────────
     cw = compute_class_weights(labels, num_classes, mode=class_weights)
     if class_weights != "none":
-        print(f"  Class weights ({class_weights}): {cw.tolist()}")
-    criterion = nn.CrossEntropyLoss(
-        weight=cw.to(device),
-        label_smoothing=args.label_smoothing,
-    )
+        print(f"  Class weights ({class_weights}): "
+              f"{[f'{v:.3f}' for v in cw.tolist()]}")
+
+    if focal_gamma > 0:
+        criterion = FocalLoss(
+            weight=cw.to(device),
+            gamma=focal_gamma,
+            label_smoothing=args.label_smoothing,
+        )
+        print(f"  Using Focal Loss (gamma={focal_gamma})")
+    else:
+        criterion = nn.CrossEntropyLoss(
+            weight=cw.to(device),
+            label_smoothing=args.label_smoothing,
+        )
+
+    # ── Oversampling setup ──────────────────────────────────────────────────
+    rng = np.random.RandomState(args.seed)
+    if oversample:
+        print("  Class-balanced oversampling enabled")
 
     print(f"\nTraining LogSumExp MIL on {len(bags)} compounds ({num_classes} classes) ...")
     for epoch in tqdm(range(args.lse_epochs), desc="LogSumExp Training"):
         model.train()
-        indices = np.random.permutation(len(bags))
+        if oversample:
+            indices = _balanced_epoch_indices(labels, num_classes, rng)
+        else:
+            indices = rng.permutation(len(bags))
         for i in indices:
             bag = bags[i].to(device)
             label = torch.tensor(labels[i], dtype=torch.long, device=device)
