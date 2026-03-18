@@ -259,6 +259,117 @@ def infer_abmil(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 2b. Model — LogSumExp MIL
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class LogSumExpMIL(nn.Module):
+    """LogSumExp pooling MIL classifier.
+
+    Pooling:  z = (1/r) * log( (1/M) * sum_i exp(r * h_i) )
+
+    The learnable parameter *r* smoothly interpolates between mean pooling
+    (r → 0) and max pooling (r → ∞).  A small FC head is applied before
+    and after pooling.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        hidden_dim: int = 128,
+        dropout: float = 0.25,
+        r_init: float = 1.0,
+    ):
+        super().__init__()
+        self.instance_transform = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+        # learnable temperature
+        self.log_r = nn.Parameter(torch.tensor(float(np.log(max(r_init, 1e-4)))))
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes),
+        )
+
+    def forward(self, bag: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
+
+        Parameters
+        ----------
+        bag : (M, D)  — instance embeddings for one compound
+
+        Returns
+        -------
+        logits : (num_classes,)
+        """
+        h = self.instance_transform(bag)          # (M, hidden)
+        r = self.log_r.exp().clamp(min=1e-4)      # positive scalar
+        # LogSumExp pooling (numerically stable via torch.logsumexp)
+        z = torch.logsumexp(r * h, dim=0) / r - np.log(h.shape[0]) / r  # (hidden,)
+        logits = self.classifier(z)               # (num_classes,)
+        return logits
+
+
+def train_logsumexp(
+    bags: List[torch.Tensor],
+    labels: List[int],
+    num_classes: int,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> LogSumExpMIL:
+    """Train LogSumExpMIL on all data, return trained model."""
+    input_dim = bags[0].shape[1]
+
+    torch.manual_seed(args.seed)
+    model = LogSumExpMIL(
+        input_dim, num_classes,
+        hidden_dim=args.lse_hidden,
+        dropout=args.lse_dropout,
+        r_init=args.lse_r_init,
+    ).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lse_lr, weight_decay=args.lse_wd)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+
+    print(f"\nTraining LogSumExp MIL on {len(bags)} compounds ({num_classes} classes) ...")
+    for epoch in tqdm(range(args.lse_epochs), desc="LogSumExp Training"):
+        model.train()
+        indices = np.random.permutation(len(bags))
+        for i in indices:
+            bag = bags[i].to(device)
+            label = torch.tensor(labels[i], dtype=torch.long, device=device)
+            logits = model(bag)
+            loss = criterion(logits.unsqueeze(0), label.unsqueeze(0))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+    print("Training done.\n")
+    return model
+
+
+def infer_logsumexp(
+    model: LogSumExpMIL,
+    bags: List[torch.Tensor],
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run inference, return (predictions, class-probabilities)."""
+    model.eval()
+    all_preds, all_probs = [], []
+    with torch.no_grad():
+        for bag in bags:
+            logits = model(bag.to(device))
+            probs = torch.softmax(logits, dim=0).cpu().numpy()
+            all_probs.append(probs)
+            all_preds.append(int(probs.argmax()))
+    return np.array(all_preds), np.stack(all_probs)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 3.  Label encoding
 # ═══════════════════════════════════════════════════════════════════════════════
 

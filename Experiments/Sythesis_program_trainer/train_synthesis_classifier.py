@@ -145,6 +145,9 @@ from classifier_utils import (
     GatedABMIL,
     train_abmil,
     infer_abmil,
+    LogSumExpMIL,
+    train_logsumexp,
+    infer_logsumexp,
     build_label_encoder,
     save_label_encoder,
     save_results,
@@ -224,8 +227,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min_compounds_per_class", type=int, default=2,
                    help="Drop synthesis programs with fewer compounds than this. Default: 2")
 
+    # ---- LogSumExp MIL hyper-parameters ----
+    p.add_argument("--lse_hidden", type=int, default=128,
+                   help="LogSumExp MIL hidden dim. Default: 128")
+    p.add_argument("--lse_dropout", type=float, default=0.25,
+                   help="LogSumExp MIL dropout. Default: 0.25")
+    p.add_argument("--lse_lr", type=float, default=1e-3,
+                   help="LogSumExp MIL learning rate. Default: 1e-3")
+    p.add_argument("--lse_wd", type=float, default=1e-4,
+                   help="LogSumExp MIL weight decay. Default: 1e-4")
+    p.add_argument("--lse_epochs", type=int, default=200,
+                   help="LogSumExp MIL training epochs. Default: 200")
+    p.add_argument("--lse_r_init", type=float, default=1.0,
+                   help="LogSumExp MIL initial r (temperature). Default: 1.0")
+
     # ---- Classifier selection ----
-    p.add_argument("--classifier", choices=["abmil", "xgboost", "catboost"],
+    p.add_argument("--classifier", choices=["abmil", "logsumexp", "xgboost", "catboost"],
                    default="abmil",
                    help="Which classifier to use. Default: abmil")
 
@@ -363,6 +380,115 @@ def _run_abmil(
             f"Embeddings       : {args.embeddings}\n"
             f"Subtract control : {args.subtract_control}\n"
             f"Normalize before subtract : {args.normalize_before_subtract}\n\n"
+        ),
+        save_predictions=args.save_predictions,
+        topk=tuple(args.topk),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5c. LogSumExp MIL training pipeline
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _run_logsumexp(
+    args: argparse.Namespace,
+    embeddings: Dict,
+    df: pd.DataFrame,
+    str2idx: Dict[str, int],
+    classes: List[str],
+    num_classes: int,
+    output_dir: Path,
+    device: torch.device,
+) -> None:
+    """Train a LogSumExp MIL classifier on per-compound bags of embeddings."""
+    bags, labels, cids = build_mil_bags(
+        embeddings,
+        compound_col=df[args.compound_col],
+        label_col=df[args.label_col],
+        label2idx=str2idx,
+        subtract_control=args.subtract_control,
+        normalize_before_subtract=args.normalize_before_subtract,
+    )
+    print(f"  {len(bags)} compounds with valid bags, feature dim {bags[0].shape[1]}.")
+
+    if len(bags) == 0:
+        raise RuntimeError(
+            "Dataset is empty. Check that compound IDs in the embeddings file "
+            "match the compound IDs in the metadata."
+        )
+
+    # ── Remove classes with fewer than min_compounds_per_class compounds ──
+    min_cpc = max(args.min_compounds_per_class, 2)
+    labels_arr = np.array(labels)
+    class_counts = np.bincount(labels_arr)
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
+    keep_mask = np.array([li in valid_classes for li in labels_arr])
+    n_removed = len(labels) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[li] for li in labels_arr if li not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
+        bags   = [b for b, k in zip(bags, keep_mask) if k]
+        labels = [l for l, k in zip(labels, keep_mask) if k]
+        cids   = [c for c, k in zip(cids, keep_mask) if k]
+
+    # Remap labels to contiguous 0..K-1
+    remaining = sorted(set(labels))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    labels = [old2new[li] for li in labels]
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
+
+    # ── Train / val / test split ─────────────────────────────────────────────
+    n_total = len(bags)
+    n_test = max(1, int(n_total * args.test_split))
+    n_val = max(1, int(n_total * args.val_split))
+    n_train = n_total - n_val - n_test
+    if n_train < 1:
+        raise RuntimeError(f"Not enough data for 3-way split: {n_total} total, need at least 3.")
+    indices = np.random.permutation(n_total)
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train + n_val]
+    test_idx = indices[n_train + n_val:]
+
+    train_bags   = [bags[i] for i in train_idx]
+    train_labels = [labels[i] for i in train_idx]
+    val_bags     = [bags[i] for i in val_idx]
+    val_labels   = [labels[i] for i in val_idx]
+    test_bags    = [bags[i] for i in test_idx]
+    test_labels  = [labels[i] for i in test_idx]
+    test_cids    = [cids[i] for i in test_idx]
+    print(f"  Train: {n_train}  |  Val: {n_val}  |  Test: {n_test}")
+
+    # ── Train on train+val ───────────────────────────────────────────────────
+    trainval_bags   = train_bags + val_bags
+    trainval_labels = train_labels + val_labels
+    model = train_logsumexp(trainval_bags, trainval_labels, num_classes, args, device)
+
+    # ── Save model ──────────────────────────────────────────────────────────
+    torch.save(model.state_dict(), output_dir / "best_model.pt")
+
+    # ── Evaluate on held-out test set ────────────────────────────────────────
+    test_preds, test_probs = infer_logsumexp(model, test_bags, device)
+    test_true = np.array(test_labels)
+
+    save_results(
+        val_true=test_true,
+        val_preds=test_preds,
+        val_probs=test_probs,
+        val_cids=test_cids,
+        classes=classes,
+        num_classes=num_classes,
+        output_dir=output_dir,
+        cm_title="Confusion Matrix — LogSumExp MIL",
+        file_suffix="",
+        report_header=(
+            f"Classifier       : logsumexp\n"
+            f"Embeddings       : {args.embeddings}\n"
+            f"Subtract control : {args.subtract_control}\n"
+            f"Normalize before subtract : {args.normalize_before_subtract}\n"
+            f"r (learned)      : {model.log_r.exp().item():.4f}\n\n"
         ),
         save_predictions=args.save_predictions,
         topk=tuple(args.topk),
@@ -840,6 +966,19 @@ def main() -> None:
             num_classes=num_classes,
             output_dir=output_dir,
             efficacy=efficacy,
+        )
+    elif args.classifier == "logsumexp":
+        if embeddings is None:
+            raise ValueError("LogSumExp MIL requires --embeddings (not --efficacy).")
+        _run_logsumexp(
+            args=args,
+            embeddings=embeddings,
+            df=df,
+            str2idx=str2idx,
+            classes=classes,
+            num_classes=num_classes,
+            output_dir=output_dir,
+            device=device,
         )
     else:
         if embeddings is None:
