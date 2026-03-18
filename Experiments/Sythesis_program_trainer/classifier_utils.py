@@ -161,6 +161,82 @@ def build_mean_latent_features(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 1b. Class filtering & label remapping
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def filter_rare_classes_bags(
+    bags: List[torch.Tensor],
+    labels: List[int],
+    cids: List[str],
+    classes: List[str],
+    min_compounds_per_class: int = 2,
+) -> Tuple[List[torch.Tensor], List[int], List[str], List[str], int]:
+    """Drop classes with fewer than *min_compounds_per_class* compounds
+    and remap remaining labels to contiguous 0..K-1.
+
+    Designed for MIL pipelines where data lives in Python lists.
+
+    Returns (bags, labels, cids, classes, num_classes).
+    """
+    min_cpc = max(min_compounds_per_class, 2)
+    labels_arr = np.array(labels)
+    class_counts = np.bincount(labels_arr)
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
+    keep_mask = np.array([li in valid_classes for li in labels_arr])
+    n_removed = len(labels) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[li] for li in labels_arr if li not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
+        bags   = [b for b, k in zip(bags, keep_mask) if k]
+        labels = [l for l, k in zip(labels, keep_mask) if k]
+        cids   = [c for c, k in zip(cids, keep_mask) if k]
+
+    remaining = sorted(set(labels))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    labels = [old2new[li] for li in labels]
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
+    return bags, labels, cids, classes, num_classes
+
+
+def filter_rare_classes_array(
+    X: np.ndarray,
+    y: np.ndarray,
+    cids: List[str],
+    classes: List[str],
+    min_compounds_per_class: int = 2,
+) -> Tuple[np.ndarray, np.ndarray, List[str], List[str], int]:
+    """Drop classes with fewer than *min_compounds_per_class* compounds
+    and remap remaining labels to contiguous 0..K-1.
+
+    Designed for tree-based pipelines where features are numpy arrays.
+
+    Returns (X, y, cids, classes, num_classes).
+    """
+    min_cpc = max(min_compounds_per_class, 2)
+    class_counts = np.bincount(y)
+    valid_classes = set(np.where(class_counts >= min_cpc)[0])
+    keep_mask = np.array([yi in valid_classes for yi in y])
+    n_removed = len(y) - keep_mask.sum()
+    if n_removed > 0:
+        removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
+        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
+              f"class(es) with <{min_cpc} compounds: {removed_names}")
+        X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
+
+    remaining = sorted(set(y.tolist()))
+    old2new = {old: new for new, old in enumerate(remaining)}
+    y = np.array([old2new[yi] for yi in y])
+    classes = [classes[old] for old in remaining]
+    num_classes = len(classes)
+    print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
+    return X, y, cids, classes, num_classes
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 2.  Model — Gated Attention-Based MIL (ABMIL)
 # ═══════════════════════════════════════════════════════════════════════════════
 

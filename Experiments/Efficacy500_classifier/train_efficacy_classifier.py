@@ -108,9 +108,11 @@ try:
         build_mean_latent_features,
         train_abmil,
         infer_abmil,
+        train_logsumexp,
+        infer_logsumexp,
         evaluate_and_report,
     )
-    from .classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
+    from .classifier_tuning import tune_abmil, tune_catboost, tune_xgboost, tune_logsumexp
 except ImportError:
     from classifier_utils import (
         load_efficacy,
@@ -120,9 +122,11 @@ except ImportError:
         build_mean_latent_features,
         train_abmil,
         infer_abmil,
+        train_logsumexp,
+        infer_logsumexp,
         evaluate_and_report,
     )
-    from classifier_tuning import tune_abmil, tune_catboost, tune_xgboost
+    from classifier_tuning import tune_abmil, tune_catboost, tune_xgboost, tune_logsumexp
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -139,9 +143,9 @@ def parse_args() -> argparse.Namespace:
     # ── Classifier choice ──
     p.add_argument(
         "--classifier",
-        choices=["xgboost", "catboost", "abmil"],
+        choices=["xgboost", "catboost", "abmil", "logsumexp"],
         default="xgboost",
-        help="Classifier to use: 'xgboost', 'catboost' (mean-pooled) or 'abmil' (gated attention MIL) (default: xgboost)",
+        help="Classifier to use: 'xgboost', 'catboost' (mean-pooled), 'abmil' (gated attention MIL), or 'logsumexp' (LogSumExp MIL) (default: xgboost)",
     )
 
     # ── Training data ──
@@ -235,6 +239,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--abmil_tune_iter", type=int, default=50, help="Number of ABMIL hyperparameter search trials (default: 50)")
     p.add_argument("--abmil_tune_epochs", type=int, default=50, help="Max epochs per ABMIL tuning trial (default: 50)")
 
+    # ── LogSumExp MIL hyper-parameters ──
+    p.add_argument("--lse_hidden", type=int, default=256, help="LogSumExp classifier hidden dim (default: 256)")
+    p.add_argument("--lse_dropout", type=float, default=0.4, help="LogSumExp dropout (default: 0.4)")
+    p.add_argument("--lse_lr", type=float, default=5e-4, help="LogSumExp learning rate (default: 5e-4)")
+    p.add_argument("--lse_wd", type=float, default=1e-4, help="LogSumExp weight decay (default: 1e-4)")
+    p.add_argument("--lse_init_r", type=float, default=1.0, help="LogSumExp initial temperature r (default: 1.0)")
+    p.add_argument("--lse_epochs", type=int, default=20, help="LogSumExp training epochs (default: 20)")
+    p.add_argument("--lse_patience", type=int, default=5, help="LogSumExp early stopping patience (default: 5)")
+    p.add_argument("--lse_instance_dropout", type=float, default=0.2, help="LogSumExp instance dropout fraction (default: 0.2)")
+    p.add_argument("--lse_eval_every", type=int, default=1, help="Evaluate on test set every N epochs (default: 1)")
+    p.add_argument("--lse_tune_iter", type=int, default=50, help="Number of LogSumExp hyperparameter search trials (default: 50)")
+    p.add_argument("--lse_tune_epochs", type=int, default=50, help="Max epochs per LogSumExp tuning trial (default: 50)")
+
     # ── Misc ──
     p.add_argument(
         "--model_name",
@@ -254,6 +271,50 @@ def parse_args() -> argparse.Namespace:
 # ═══════════════════════════════════════════════════════════════════════════════
 # Classifier runners
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _run_logsumexp(
+    embeddings: Dict,
+    cid2label: Dict[str, int],
+    inf_embeddings: Dict,
+    inf_cid2label: Dict[str, int],
+    args: argparse.Namespace,
+    device: torch.device,
+    output_dir: Path | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
+    """Train LogSumExp MIL, run inference, return (preds, proba, y_true, cids, label)."""
+    train_bags, train_labels, _ = build_mil_bags(
+        embeddings, cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    print(f"  {len(train_bags)} training compounds (bags), feature dim {train_bags[0].shape[1]}.")
+    if len(train_bags) == 0:
+        raise RuntimeError("No compounds matched between embeddings and efficacy.")
+
+    inf_bags, inf_labels, cids_inf = build_mil_bags(
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    y_inf = np.array(inf_labels)
+    print(f"  {len(inf_bags)} inference compounds (bags).")
+    if len(inf_bags) == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
+    if args.tune:
+        best_params = tune_logsumexp(
+            train_bags, train_labels, inf_bags, y_inf, args, device,
+        )
+        for k, v in best_params.items():
+            setattr(args, f"lse_{k}", v)
+        print(f"\n  Final LogSumExp config: hidden={args.lse_hidden}  dropout={args.lse_dropout}  "
+              f"lr={args.lse_lr}  wd={args.lse_wd}  init_r={args.lse_init_r}  "
+              f"instance_dropout={args.lse_instance_dropout}")
+
+    model = train_logsumexp(
+        train_bags, train_labels, args, device,
+        eval_bags=inf_bags, eval_labels=y_inf, output_dir=output_dir,
+    )
+
+    inf_preds, inf_proba = infer_logsumexp(model, inf_bags, device)
+    return inf_preds, inf_proba, y_inf, cids_inf, "LogSumExp"
 
 
 def _run_abmil(
@@ -568,6 +629,11 @@ def main() -> None:
     # ── Run classifier ───────────────────────────────────────────────────
     if args.classifier == "abmil":
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_abmil(
+            embeddings, cid2label, inf_embeddings, inf_cid2label, args, device,
+            output_dir=output_dir,
+        )
+    elif args.classifier == "logsumexp":
+        inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_logsumexp(
             embeddings, cid2label, inf_embeddings, inf_cid2label, args, device,
             output_dir=output_dir,
         )

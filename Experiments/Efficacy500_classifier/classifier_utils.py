@@ -200,6 +200,63 @@ class GatedABMIL(nn.Module):
         return logit, att.squeeze()
 
 
+class LogSumExpMIL(nn.Module):
+    """LogSumExp-based Multiple Instance Learning classifier.
+
+    Uses LogSumExp pooling as a smooth interpolation between
+    mean-pooling (r -> inf) and max-pooling (r -> 0+) over instances:
+        pool(H) = r * log( (1/N) * sum(exp(h_i / r)) )
+    where r is a learnable temperature parameter.
+    """
+
+    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.25,
+                 init_r: float = 1.0):
+        super().__init__()
+        self.instance_norm = nn.LayerNorm(input_dim)
+        # Learnable temperature (log-space for positivity)
+        self.log_r = nn.Parameter(torch.tensor(float(np.log(init_r))))
+        # Instance-level projection before pooling
+        self.instance_proj = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.ReLU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+
+    def forward(self, bag: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass.
+
+        Parameters
+        ----------
+        bag : (N_instances, D)
+
+        Returns
+        -------
+        logit        : (1,) raw logit
+        contributions : (N_instances,) per-instance contribution weights
+        """
+        bag = self.instance_norm(bag)
+        h = self.instance_proj(bag)  # (N, D)
+        r = torch.exp(self.log_r).clamp(min=1e-6)  # positive temperature
+        # LogSumExp pooling: r * log( (1/N) * sum(exp(h/r)) )
+        # Using torch.logsumexp for numerical stability
+        N = h.shape[0]
+        bag_repr = r * (torch.logsumexp(h / r, dim=0) - np.log(N))  # (D,)
+        bag_repr = bag_repr.unsqueeze(0)  # (1, D)
+        logit = self.classifier(bag_repr).squeeze()  # scalar
+        # Instance contributions: softmax of scaled instance norms
+        with torch.no_grad():
+            contributions = torch.softmax((h / r).sum(dim=-1), dim=0)  # (N,)
+        return logit, contributions
+
+
 class MILBagDataset:
     """Dataset that yields one bag (variable-length tensor) per compound."""
 
@@ -352,6 +409,163 @@ def train_abmil(
 
 def infer_abmil(
     model: GatedABMIL,
+    bags: List[torch.Tensor],
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Run inference, return (predictions, probabilities)."""
+    model.eval()
+    probas, preds = [], []
+    with torch.no_grad():
+        for bag in bags:
+            logit, _ = model(bag.to(device))
+            p = torch.sigmoid(logit).cpu().item()
+            probas.append(p)
+            preds.append(int(p >= 0.5))
+    return np.array(preds), np.array(probas)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3b. LogSumExp MIL — train / infer
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def train_logsumexp(
+    bags: List[torch.Tensor],
+    labels: List[int],
+    args: argparse.Namespace,
+    device: torch.device,
+    eval_bags: List[torch.Tensor] | None = None,
+    eval_labels: np.ndarray | None = None,
+    output_dir: Path | None = None,
+    verbose: bool = True,
+) -> LogSumExpMIL:
+    """Train LogSumExp MIL, return trained model."""
+    input_dim = bags[0].shape[1]
+    all_labels = np.array(labels)
+    has_eval = eval_bags is not None and eval_labels is not None
+
+    # ── Compute pos_weight for class balancing ───────────────────────────
+    pos_weight = None
+    if args.balance:
+        n_pos = int(all_labels.sum())
+        n_neg = len(all_labels) - n_pos
+        if n_pos > 0:
+            pos_weight = torch.tensor(n_neg / n_pos, device=device)
+            if verbose:
+                print(f"  LogSumExp pos_weight={pos_weight.item():.3f} (neg={n_neg}, pos={n_pos})")
+
+    if verbose:
+        print(f"\nTraining LogSumExp MIL on all {len(bags)} training compounds ...")
+    torch.manual_seed(args.seed)
+    model = LogSumExpMIL(
+        input_dim, args.lse_hidden, args.lse_dropout, args.lse_init_r,
+    ).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lse_lr, weight_decay=args.lse_wd)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.lse_epochs, eta_min=1e-6)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    best_auroc = -1.0
+    patience_counter = 0
+    best_state = None
+    training_log = []
+    ckpt_dir = output_dir / "checkpoints" if output_dir is not None else None
+    if ckpt_dir is not None:
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    for epoch in tqdm(range(args.lse_epochs), desc="LogSumExp Training", disable=not verbose):
+        model.train()
+        indices = np.random.permutation(len(bags))
+        epoch_loss = 0.0
+        for i in indices:
+            bag = bags[i].to(device)
+            if bag.shape[0] > 4 and args.lse_instance_dropout > 0:
+                keep_mask = torch.rand(bag.shape[0], device=device) > args.lse_instance_dropout
+                if keep_mask.sum() > 1:
+                    bag = bag[keep_mask]
+            label = torch.tensor(float(labels[i]), device=device)
+            optimizer.zero_grad()
+            logit, _ = model(bag)
+            loss = criterion(logit, label)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            epoch_loss += loss.item()
+        avg_loss = epoch_loss / len(bags)
+        scheduler.step()
+        cur_lr = optimizer.param_groups[0]["lr"]
+
+        eval_auroc = None
+        eval_f1 = None
+        if has_eval and (epoch + 1) % args.lse_eval_every == 0:
+            preds, probas = infer_logsumexp(model, eval_bags, device)
+            eval_auroc = roc_auc_score(eval_labels, probas)
+            eval_f1 = f1_score(eval_labels, preds, average="weighted", zero_division=0)
+            if verbose:
+                r_val = torch.exp(model.log_r).item()
+                print(f"  Epoch {epoch+1}/{args.lse_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  "
+                      f"r={r_val:.4f}  eval_AUROC={eval_auroc:.4f}  eval_F1={eval_f1:.4f}")
+
+            if eval_auroc > best_auroc:
+                best_auroc = eval_auroc
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                if ckpt_dir is not None:
+                    torch.save({
+                        "epoch": epoch + 1,
+                        "model_state_dict": best_state,
+                        "auroc": eval_auroc,
+                        "f1": eval_f1,
+                        "loss": avg_loss,
+                    }, ckpt_dir / "best_model.pt")
+                    if verbose:
+                        print(f"    Saved best checkpoint (AUROC={eval_auroc:.4f})")
+            else:
+                patience_counter += 1
+        elif (epoch + 1) % 50 == 0 or epoch == 0:
+            if verbose:
+                r_val = torch.exp(model.log_r).item()
+                print(f"  Epoch {epoch+1}/{args.lse_epochs}  loss={avg_loss:.4f}  lr={cur_lr:.2e}  r={r_val:.4f}")
+
+        if not has_eval:
+            if avg_loss < (best_auroc if best_auroc > 0 else float("inf")) - 1e-4:
+                best_auroc = avg_loss
+                patience_counter = 0
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                patience_counter += 1
+
+        training_log.append({
+            "epoch": epoch + 1,
+            "train_loss": avg_loss,
+            "lr": cur_lr,
+            "r": torch.exp(model.log_r).item(),
+            "eval_auroc": eval_auroc,
+            "eval_f1": eval_f1,
+        })
+
+        if patience_counter >= args.lse_patience:
+            if verbose:
+                print(f"  Early stopping at epoch {epoch+1} (patience={args.lse_patience})")
+            break
+
+    if output_dir is not None and training_log:
+        log_df = pd.DataFrame(training_log)
+        log_path = output_dir / "training_log.csv"
+        log_df.to_csv(log_path, index=False)
+        if verbose:
+            print(f"Training log saved : {log_path}")
+
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+        if has_eval and verbose:
+            print(f"Restored best model (eval AUROC={best_auroc:.4f})")
+    if verbose:
+        print("Training done.\n")
+    return model
+
+
+def infer_logsumexp(
+    model: LogSumExpMIL,
     bags: List[torch.Tensor],
     device: torch.device,
 ) -> Tuple[np.ndarray, np.ndarray]:

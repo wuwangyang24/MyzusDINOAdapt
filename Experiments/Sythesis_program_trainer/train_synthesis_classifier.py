@@ -157,6 +157,8 @@ from classifier_utils import (
     build_efficacy_features,
     build_mil_bags,
     build_mean_latent_features,
+    filter_rare_classes_bags,
+    filter_rare_classes_array,
     GatedABMIL,
     train_abmil,
     infer_abmil,
@@ -335,28 +337,9 @@ def _run_abmil(
             "match the compound IDs in the metadata."
         )
 
-    # ── Remove classes with fewer than min_compounds_per_class compounds ──
-    min_cpc = max(args.min_compounds_per_class, 2)
-    labels_arr = np.array(labels)
-    class_counts = np.bincount(labels_arr)
-    valid_classes = set(np.where(class_counts >= min_cpc)[0])
-    keep_mask = np.array([li in valid_classes for li in labels_arr])
-    n_removed = len(labels) - keep_mask.sum()
-    if n_removed > 0:
-        removed_names = sorted({classes[li] for li in labels_arr if li not in valid_classes})
-        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
-              f"class(es) with <{min_cpc} compounds: {removed_names}")
-        bags   = [b for b, k in zip(bags, keep_mask) if k]
-        labels = [l for l, k in zip(labels, keep_mask) if k]
-        cids   = [c for c, k in zip(cids, keep_mask) if k]
-
-    # Remap labels to contiguous 0..K-1
-    remaining = sorted(set(labels))
-    old2new = {old: new for new, old in enumerate(remaining)}
-    labels = [old2new[li] for li in labels]
-    classes = [classes[old] for old in remaining]
-    num_classes = len(classes)
-    print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
+    bags, labels, cids, classes, num_classes = filter_rare_classes_bags(
+        bags, labels, cids, classes, args.min_compounds_per_class,
+    )
 
     # ── Train / val / test split ─────────────────────────────────────────────
     n_total = len(bags)
@@ -443,28 +426,9 @@ def _run_logsumexp(
             "match the compound IDs in the metadata."
         )
 
-    # ── Remove classes with fewer than min_compounds_per_class compounds ──
-    min_cpc = max(args.min_compounds_per_class, 2)
-    labels_arr = np.array(labels)
-    class_counts = np.bincount(labels_arr)
-    valid_classes = set(np.where(class_counts >= min_cpc)[0])
-    keep_mask = np.array([li in valid_classes for li in labels_arr])
-    n_removed = len(labels) - keep_mask.sum()
-    if n_removed > 0:
-        removed_names = sorted({classes[li] for li in labels_arr if li not in valid_classes})
-        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
-              f"class(es) with <{min_cpc} compounds: {removed_names}")
-        bags   = [b for b, k in zip(bags, keep_mask) if k]
-        labels = [l for l, k in zip(labels, keep_mask) if k]
-        cids   = [c for c, k in zip(cids, keep_mask) if k]
-
-    # Remap labels to contiguous 0..K-1
-    remaining = sorted(set(labels))
-    old2new = {old: new for new, old in enumerate(remaining)}
-    labels = [old2new[li] for li in labels]
-    classes = [classes[old] for old in remaining]
-    num_classes = len(classes)
-    print(f"  {num_classes} classes after filtering, {len(labels)} compounds remaining.")
+    bags, labels, cids, classes, num_classes = filter_rare_classes_bags(
+        bags, labels, cids, classes, args.min_compounds_per_class,
+    )
 
     # ── Train / (val) / test split ──────────────────────────────────────────
     use_early_stopping = args.lse_patience > 0
@@ -599,25 +563,9 @@ def _run_xgboost(
             "match the compound IDs in the metadata."
         )
 
-    # ── Remove classes with fewer than min_compounds_per_class compounds ──
-    min_cpc = max(args.min_compounds_per_class, 2)  # need ≥ 2 for train/val split
-    class_counts = np.bincount(y)
-    valid_classes = set(np.where(class_counts >= min_cpc)[0])
-    keep_mask = np.array([yi in valid_classes for yi in y])
-    n_removed = len(y) - keep_mask.sum()
-    if n_removed > 0:
-        removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
-        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
-              f"class(es) with <{min_cpc} compounds: {removed_names}")
-        X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
-
-    # Remap labels to contiguous 0..K-1 (required by XGBoost)
-    remaining = sorted(set(y.tolist()))
-    old2new = {old: new for new, old in enumerate(remaining)}
-    y = np.array([old2new[yi] for yi in y])
-    classes = [classes[old] for old in remaining]
-    num_classes = len(classes)
-    print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
+    X, y, cids, classes, num_classes = filter_rare_classes_array(
+        X, y, cids, classes, args.min_compounds_per_class,
+    )
 
     # ── Train / val / test split ─────────────────────────────────────────────
     strat = y if len(np.unique(y)) > 1 else None
@@ -779,25 +727,9 @@ def _run_catboost(
             "match the compound IDs in the metadata."
         )
 
-    # ── Remove classes with fewer than min_compounds_per_class compounds ──
-    min_cpc = max(args.min_compounds_per_class, 2)
-    class_counts = np.bincount(y)
-    valid_classes = set(np.where(class_counts >= min_cpc)[0])
-    keep_mask = np.array([yi in valid_classes for yi in y])
-    n_removed = len(y) - keep_mask.sum()
-    if n_removed > 0:
-        removed_names = sorted({classes[yi] for yi in y if yi not in valid_classes})
-        print(f"  Dropped {n_removed} compound(s) from {len(removed_names)} "
-              f"class(es) with <{min_cpc} compounds: {removed_names}")
-        X, y, cids = X[keep_mask], y[keep_mask], [c for c, k in zip(cids, keep_mask) if k]
-
-    # Remap labels to contiguous 0..K-1
-    remaining = sorted(set(y.tolist()))
-    old2new = {old: new for new, old in enumerate(remaining)}
-    y = np.array([old2new[yi] for yi in y])
-    classes = [classes[old] for old in remaining]
-    num_classes = len(classes)
-    print(f"  {num_classes} classes after filtering, {len(y)} compounds remaining.")
+    X, y, cids, classes, num_classes = filter_rare_classes_array(
+        X, y, cids, classes, args.min_compounds_per_class,
+    )
 
     # ── Class distribution ───────────────────────────────────────────────────
     for ci, cname in enumerate(classes):
