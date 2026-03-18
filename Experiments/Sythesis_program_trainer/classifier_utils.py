@@ -259,6 +259,44 @@ def infer_abmil(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# 2a-½. Class-weight computation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def compute_class_weights(
+    labels: List[int],
+    num_classes: int,
+    mode: str = "balanced",
+) -> torch.Tensor:
+    """Compute per-class weights for CrossEntropyLoss.
+
+    Parameters
+    ----------
+    labels     : list of integer class indices
+    num_classes: total number of classes
+    mode       : ``"balanced"`` — inverse frequency (N / (K * n_k))
+                 ``"sqrt_balanced"`` — sqrt of inverse frequency
+                 ``"none"`` — uniform weights (all ones)
+
+    Returns
+    -------
+    weights : (num_classes,) float tensor
+    """
+    counts = np.bincount(labels, minlength=num_classes).astype(np.float64)
+    counts = np.maximum(counts, 1.0)          # avoid division by zero
+    n_samples = float(len(labels))
+
+    if mode == "balanced":
+        w = n_samples / (num_classes * counts)
+    elif mode == "sqrt_balanced":
+        w = np.sqrt(n_samples / (num_classes * counts))
+    else:  # "none"
+        w = np.ones(num_classes, dtype=np.float64)
+
+    return torch.tensor(w, dtype=torch.float32)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # 2b. Model — LogSumExp MIL
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -321,6 +359,7 @@ def train_logsumexp(
     num_classes: int,
     args: argparse.Namespace,
     device: torch.device,
+    class_weights: str = "none",
 ) -> LogSumExpMIL:
     """Train LogSumExpMIL on all data, return trained model."""
     input_dim = bags[0].shape[1]
@@ -333,7 +372,15 @@ def train_logsumexp(
         r_init=args.lse_r_init,
     ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lse_lr, weight_decay=args.lse_wd)
-    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+
+    # ── Class-weight-aware loss ──────────────────────────────────────────────
+    cw = compute_class_weights(labels, num_classes, mode=class_weights)
+    if class_weights != "none":
+        print(f"  Class weights ({class_weights}): {cw.tolist()}")
+    criterion = nn.CrossEntropyLoss(
+        weight=cw.to(device),
+        label_smoothing=args.label_smoothing,
+    )
 
     print(f"\nTraining LogSumExp MIL on {len(bags)} compounds ({num_classes} classes) ...")
     for epoch in tqdm(range(args.lse_epochs), desc="LogSumExp Training"):

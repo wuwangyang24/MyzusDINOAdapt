@@ -255,6 +255,9 @@ def parse_args() -> argparse.Namespace:
                    help="LogSumExp MIL training epochs. Default: 200")
     p.add_argument("--lse_r_init", type=float, default=1.0,
                    help="LogSumExp MIL initial r (temperature). Default: 1.0")
+    p.add_argument("--lse_class_weights", choices=["none", "balanced", "sqrt_balanced"],
+                   default="balanced",
+                   help="LogSumExp MIL class weighting for imbalanced data. Default: balanced")
 
     # ---- Classifier selection ----
     p.add_argument("--classifier", choices=["abmil", "logsumexp", "xgboost", "catboost"],
@@ -479,7 +482,8 @@ def _run_logsumexp(
     # ── Train on train+val ───────────────────────────────────────────────────
     trainval_bags   = train_bags + val_bags
     trainval_labels = train_labels + val_labels
-    model = train_logsumexp(trainval_bags, trainval_labels, num_classes, args, device)
+    model = train_logsumexp(trainval_bags, trainval_labels, num_classes, args, device,
+                             class_weights=args.lse_class_weights)
 
     # ── Save model ──────────────────────────────────────────────────────────
     torch.save(model.state_dict(), output_dir / "best_model.pt")
@@ -503,6 +507,7 @@ def _run_logsumexp(
             f"Embeddings       : {args.embeddings}\n"
             f"Subtract control : {args.subtract_control}\n"
             f"Normalize before subtract : {args.normalize_before_subtract}\n"
+            f"Class weights    : {args.lse_class_weights}\n"
             f"r (learned)      : {model.log_r.exp().item():.4f}\n\n"
         ),
         save_predictions=args.save_predictions,
