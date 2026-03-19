@@ -162,25 +162,25 @@ def parse_args():
     parser.add_argument(
         "--efficacy-train-metadata",
         type=str,
-        default="",
+        default="Data/Metadata/metadata_compound_all20ppm.json",
         help="Path to training metadata JSON for efficacy classifier"
     )
     parser.add_argument(
         "--efficacy-train-labels",
         type=str,
-        default="Experiments/efficacy.pt",
+        default="Data/Embeddings/efficacy.pt",
         help="Path to training efficacy .pt file"
     )
     parser.add_argument(
         "--efficacy-inference-metadata",
         type=str,
-        default="",
+        default="Data/Metadata/metadata_compound_all100ppm.json",
         help="Path to inference metadata JSON for efficacy classifier"
     )
     parser.add_argument(
         "--efficacy-inference-labels",
         type=str,
-        default="Experiments/efficacy_500ppm.csv",
+        default="Data/Metadata/compounds500ppm.csv",
         help="Path to inference efficacy CSV (columns: 'Compound No', 'Active')"
     )
     parser.add_argument(
