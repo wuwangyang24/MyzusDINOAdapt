@@ -64,11 +64,15 @@ def _encode_metadata(
     backbone: torch.nn.Module,
     device: torch.device,
     batch_size: int = 64,
+    label: str = "",
 ) -> Dict:
     """Encode a metadata list → nested dict (same format as encode_embeddings)."""
     result: Dict = {}
-    for entry in metadata:
+    total = len(metadata)
+    for i, entry in enumerate(metadata):
         cid = str(entry["Compound"])
+        if (i + 1) % 10 == 0 or (i + 1) == total:
+            print(f"  [EfficacyClassifier] Encoding {label} {i + 1}/{total}", end="\r", flush=True)
         result[cid] = {}
         for key, plate_data in entry.items():
             if key == "Compound" or not isinstance(plate_data, dict):
@@ -85,6 +89,8 @@ def _encode_metadata(
                 plate_result["control"] = ctrl.mean(dim=0)
             if plate_result:
                 result[cid][key] = plate_result
+    if total > 0:
+        print()  # newline after \r progress
     return result
 
 
@@ -175,21 +181,30 @@ class EfficacyClassifierCallback(pl.Callback):
         backbone.eval()
         device = pl_module.device
 
+        step = trainer.global_step
+        print(f"  [EfficacyClassifier] step={step} — Encoding train embeddings...")
+
         # 1. Encode training embeddings
         train_emb = _encode_metadata(
-            self.train_metadata, self.image_root_dir, backbone, device, self.batch_size)
+            self.train_metadata, self.image_root_dir, backbone, device, self.batch_size,
+            label="train")
         X_train, y_train, _ = _build_mean_features(train_emb, self.train_labels)
 
         if X_train.shape[0] == 0:
             return
 
+        print(f"  [EfficacyClassifier] step={step} — Encoding inference embeddings...")
+
         # 2. Encode inference embeddings
         inf_emb = _encode_metadata(
-            self.inference_metadata, self.image_root_dir, backbone, device, self.batch_size)
+            self.inference_metadata, self.image_root_dir, backbone, device, self.batch_size,
+            label="inference")
         X_inf, y_inf, _ = _build_mean_features(inf_emb, self.inference_labels)
 
         if X_inf.shape[0] == 0:
             return
+
+        print(f"  [EfficacyClassifier] step={step} — Training XGBoost ({X_train.shape[0]} samples)...")
 
         # 3. Train XGBoost
         clf = xgb.XGBClassifier(
@@ -219,7 +234,6 @@ class EfficacyClassifierCallback(pl.Callback):
         pl_module.log("val/efficacy_bal_acc", bal_acc, sync_dist=True)
         pl_module.log("val/efficacy_f1", f1, sync_dist=True)
 
-        step = trainer.global_step
         print(f"  [EfficacyClassifier] step={step}  AUROC={auroc:.4f}  "
               f"BalAcc={bal_acc:.4f}  F1={f1:.4f}")
 
