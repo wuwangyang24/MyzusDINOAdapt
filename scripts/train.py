@@ -1,11 +1,15 @@
 """Training script for DINO with Triple-Check Loss and LoRA/DoRA adaptation."""
 
 import argparse
+import sys
 import torch
 import pytorch_lightning as pl
 from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
+
+# Ensure the project root (parent of scripts/) is on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss
