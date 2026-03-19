@@ -146,6 +146,55 @@ def parse_args():
         default=None,
         help="Run validation every N training steps (default: once per epoch)"
     )
+    parser.add_argument(
+        "--gradient-clip-val",
+        type=float,
+        default=1.0,
+        help="Max gradient norm for clipping (default: 1.0, 0 to disable)"
+    )
+
+    # ── Efficacy classifier validation ──
+    parser.add_argument(
+        "--efficacy-val",
+        action="store_true",
+        help="Run efficacy classification as a validation metric"
+    )
+    parser.add_argument(
+        "--efficacy-train-metadata",
+        type=str,
+        default="",
+        help="Path to training metadata JSON for efficacy classifier"
+    )
+    parser.add_argument(
+        "--efficacy-train-labels",
+        type=str,
+        default="Experiments/efficacy.pt",
+        help="Path to training efficacy .pt file"
+    )
+    parser.add_argument(
+        "--efficacy-inference-metadata",
+        type=str,
+        default="",
+        help="Path to inference metadata JSON for efficacy classifier"
+    )
+    parser.add_argument(
+        "--efficacy-inference-labels",
+        type=str,
+        default="Experiments/efficacy_500ppm.csv",
+        help="Path to inference efficacy CSV (columns: 'Compound No', 'Active')"
+    )
+    parser.add_argument(
+        "--efficacy-image-root",
+        type=str,
+        default="",
+        help="Root directory for efficacy classifier image paths (defaults to --data-root-dir)"
+    )
+    parser.add_argument(
+        "--efficacy-threshold",
+        type=float,
+        default=70.0,
+        help="Efficacy binarisation threshold (default: 70.0)"
+    )
 
     return parser.parse_args()
 
@@ -346,6 +395,21 @@ def main():
     )
     callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval="epoch")]
 
+    # Efficacy classifier callback (optional)
+    if args.efficacy_val:
+        from src.training.efficacy_callback import EfficacyClassifierCallback
+        efficacy_image_root = args.efficacy_image_root or args.data_root_dir or args.data_dir
+        efficacy_callback = EfficacyClassifierCallback(
+            train_metadata_path=args.efficacy_train_metadata,
+            train_efficacy_path=args.efficacy_train_labels,
+            inference_metadata_path=args.efficacy_inference_metadata,
+            inference_efficacy_csv=args.efficacy_inference_labels,
+            image_root_dir=efficacy_image_root,
+            threshold=args.efficacy_threshold,
+        )
+        callbacks.append(efficacy_callback)
+        logger.info("Efficacy classifier validation enabled")
+
     # --- Loggers ---
     tb_logger = TensorBoardLogger(
         save_dir=config["logging"]["log_dir"],
@@ -386,6 +450,7 @@ def main():
         logger=pl_loggers,
         accumulate_grad_batches=config["training"].get("gradient_accumulation_steps", 1),
         log_every_n_steps=10,
+        gradient_clip_val=args.gradient_clip_val if args.gradient_clip_val > 0 else None,
     )
     if args.val_every_steps is not None and val_dataloader is not None:
         trainer_kwargs["val_check_interval"] = args.val_every_steps

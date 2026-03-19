@@ -90,12 +90,16 @@ class TripleCheckLoss(nn.Module):
     
     def _cosine_distance(self, delta_1: torch.Tensor, delta_2: torch.Tensor) -> torch.Tensor:
         """Compute cosine distance between deltas."""
-        # Normalize vectors
-        delta_1_norm = F.normalize(delta_1, p=2, dim=1)
-        delta_2_norm = F.normalize(delta_2, p=2, dim=1)
-        
+        eps = 1e-6
+        # Clamp norms to avoid division by near-zero when deltas vanish
+        norm_1 = delta_1.norm(p=2, dim=1, keepdim=True).clamp(min=eps)
+        norm_2 = delta_2.norm(p=2, dim=1, keepdim=True).clamp(min=eps)
+        delta_1_norm = delta_1 / norm_1
+        delta_2_norm = delta_2 / norm_2
+
         # Cosine distance: 1 - cosine_similarity
         cosine_sim = torch.sum(delta_1_norm * delta_2_norm, dim=1)
+        cosine_sim = cosine_sim.clamp(-1.0, 1.0)
         distance = 1.0 - cosine_sim
         return distance
     
