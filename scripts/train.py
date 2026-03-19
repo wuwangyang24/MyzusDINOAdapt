@@ -49,6 +49,12 @@ def parse_args():
         help="Path to paired bioassay data directory"
     )
     parser.add_argument(
+        "--metadata",
+        type=str,
+        default="metadata.json",
+        help="Path to metadata JSON file (relative to data-dir, or absolute)"
+    )
+    parser.add_argument(
         "--val-data-dir",
         type=str,
         help="Path to validation data directory (optional)"
@@ -209,6 +215,7 @@ def main():
     )
     train_dataset = CompoundPlateDataset(
         root_dir=args.data_dir,
+        metadata_file=args.metadata,
         transform=transform,
     )
     train_dataloader = DataLoader(
