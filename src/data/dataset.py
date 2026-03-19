@@ -83,13 +83,7 @@ class CompoundPlateDataset(Dataset):
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
-        
-        # Support both absolute and relative metadata paths
-        metadata_path = Path(metadata_file)
-        if metadata_path.is_absolute():
-            self.metadata_path = metadata_path
-        else:
-            self.metadata_path = self.root_dir / metadata_file
+        self.metadata_path = Path(metadata_file)
         
         if not self.metadata_path.exists():
             raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
