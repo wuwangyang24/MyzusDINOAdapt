@@ -109,6 +109,11 @@ def parse_args():
         choices=["32", "16-mixed", "bf16-mixed"],
         help="Training precision: 32 (full), 16-mixed (AMP float16), bf16-mixed (AMP bfloat16)"
     )
+    parser.add_argument(
+        "--warmup_epochs",
+        type=int,
+        help="Number of warmup epochs (overrides config)"
+    )
 
     return parser.parse_args()
 
@@ -133,6 +138,8 @@ def main():
         config["data"]["num_untreated_samples"] = args.num_untreated_samples
     if args.device:
         config["device"] = args.device
+    if args.warmup_epochs:
+        config["training"]["warmup_epochs"] = args.warmup_epochs
 
     # Set default num_untreated_samples if not specified
     config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
