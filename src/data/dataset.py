@@ -172,12 +172,11 @@ class CompoundPlateDataset(Dataset):
                     images_tensor = torch.stack(images)  # Shape: (N, C, H, W)
                     plates_data[plate_name][sample_type] = images_tensor
         
-        # Ensure all plates have both treated and control
-        for plate_name in plates_data:
-            if "treated" not in plates_data[plate_name]:
-                raise ValueError(f"Compound {compound_id}: {plate_name} missing treated samples")
-            if "control" not in plates_data[plate_name]:
-                raise ValueError(f"Compound {compound_id}: {plate_name} missing control samples")
+        # Keep only plates that have both treated and control
+        plates_data = {
+            pname: pdata for pname, pdata in plates_data.items()
+            if "treated" in pdata and "control" in pdata
+        }
         
         return {
             "id": compound_id,
