@@ -406,6 +406,7 @@ def main():
             inference_efficacy_csv=args.efficacy_inference_labels,
             image_root_dir=efficacy_image_root,
             threshold=args.efficacy_threshold,
+            every_n_steps=args.val_every_steps or 0,
         )
         callbacks.append(efficacy_callback)
         logger.info("Efficacy classifier validation enabled")

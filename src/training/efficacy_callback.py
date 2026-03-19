@@ -135,6 +135,7 @@ class EfficacyClassifierCallback(pl.Callback):
         image_root_dir: str,
         threshold: float = 70.0,
         batch_size: int = 64,
+        every_n_steps: int = 0,
     ):
         super().__init__()
         if not _HAS_XGBOOST:
@@ -146,6 +147,7 @@ class EfficacyClassifierCallback(pl.Callback):
         self.image_root_dir = Path(image_root_dir)
         self.threshold = threshold
         self.batch_size = batch_size
+        self.every_n_steps = every_n_steps
 
         # Load training metadata
         with open(train_metadata_path, "r") as f:
@@ -167,7 +169,7 @@ class EfficacyClassifierCallback(pl.Callback):
         df = pd.read_csv(inference_efficacy_csv)
         self.inference_labels = {str(row["Compound No"]): int(row["Active"]) for _, row in df.iterrows()}
 
-    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def _run_efficacy_eval(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         """Encode, train classifier, evaluate, log."""
         backbone = pl_module.model.backbone
         backbone.eval()
@@ -223,3 +225,15 @@ class EfficacyClassifierCallback(pl.Callback):
 
         # Put backbone back to training mode
         backbone.train()
+
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if self.every_n_steps == 0:
+            self._run_efficacy_eval(trainer, pl_module)
+
+    def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs, batch, batch_idx) -> None:
+        if self.every_n_steps > 0 and trainer.global_step % self.every_n_steps == 0:
+            self._run_efficacy_eval(trainer, pl_module)
+
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        # Still fires if a val_dataloader is present
+        self._run_efficacy_eval(trainer, pl_module)
