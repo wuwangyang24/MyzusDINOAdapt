@@ -318,6 +318,14 @@ def main():
         with open(metadata_path, 'r') as f:
             raw_metadata = json.load(f)
         all_compounds = raw_metadata if isinstance(raw_metadata, list) else raw_metadata.get("compounds", [])
+        # Pre-filter to compounds with >= 2 valid plates (matching dataset filter)
+        before = len(all_compounds)
+        all_compounds = [
+            c for c in all_compounds
+            if CompoundPlateDataset._count_valid_plates(c) >= 2
+        ]
+        if len(all_compounds) < before:
+            logger.info(f"Filtered {before - len(all_compounds)} compounds with <2 valid plates ({before} -> {len(all_compounds)})")
         n_val = max(1, int(len(all_compounds) * args.val_ratio))
         # Deterministic shuffle for reproducibility
         import random
