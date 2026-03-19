@@ -1,6 +1,7 @@
 """Training script for DINO with Triple-Check Loss and LoRA/DoRA adaptation."""
 
 import argparse
+import json
 import sys
 import torch
 torch.set_float32_matmul_precision('medium')
@@ -133,6 +134,12 @@ def parse_args():
         default=4,
         help="Max images per plate per type per step (default: 4)"
     )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=0.0,
+        help="Fraction of metadata entries to use as validation set (0.0 = no split)"
+    )
 
     return parser.parse_args()
 
@@ -235,10 +242,32 @@ def main():
         image_size=config["data"]["image_size"],
         is_train=True
     )
+
+    # Split metadata into train/val if --val-ratio is set
+    train_compounds = None
+    val_compounds = None
+    if args.val_ratio > 0.0:
+        metadata_path = Path(args.metadata)
+        with open(metadata_path, 'r') as f:
+            raw_metadata = json.load(f)
+        all_compounds = raw_metadata if isinstance(raw_metadata, list) else raw_metadata.get("compounds", [])
+        n_val = max(1, int(len(all_compounds) * args.val_ratio))
+        # Deterministic shuffle for reproducibility
+        import random
+        rng = random.Random(config.get("seed", 42))
+        indices = list(range(len(all_compounds)))
+        rng.shuffle(indices)
+        val_indices = sorted(indices[:n_val])
+        train_indices = sorted(indices[n_val:])
+        train_compounds = [all_compounds[i] for i in train_indices]
+        val_compounds = [all_compounds[i] for i in val_indices]
+        logger.info(f"Split metadata: {len(train_compounds)} train, {len(val_compounds)} val (ratio={args.val_ratio})")
+
     train_dataset = CompoundPlateDataset(
         root_dir=image_root_dir,
         metadata_file=args.metadata,
         transform=transform,
+        compounds_list=train_compounds,
     )
     train_dataloader = DataLoader(
         train_dataset,
@@ -249,7 +278,26 @@ def main():
     )
 
     val_dataloader = None
-    if args.val_data_dir:
+    if val_compounds is not None:
+        logger.info(f"Creating validation set from metadata split ({len(val_compounds)} compounds)")
+        val_transform = get_default_transforms(
+            image_size=config["data"]["image_size"],
+            is_train=False
+        )
+        val_dataset = CompoundPlateDataset(
+            root_dir=image_root_dir,
+            metadata_file=args.metadata,
+            transform=val_transform,
+            compounds_list=val_compounds,
+        )
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=config["training"]["batch_size"],
+            num_workers=config["training"]["num_workers"],
+            shuffle=False,
+            pin_memory=torch.cuda.is_available(),
+        )
+    elif args.val_data_dir:
         logger.info(f"Loading validation data from: {args.val_data_dir}")
         val_transform = get_default_transforms(
             image_size=config["data"]["image_size"],

@@ -72,6 +72,7 @@ class CompoundPlateDataset(Dataset):
         root_dir: str,
         metadata_file: str = "metadata.json",
         transform: Optional[Callable] = None,
+        compounds_list: Optional[List] = None,
     ):
         """
         Initialize compound-plate dataset.
@@ -80,25 +81,29 @@ class CompoundPlateDataset(Dataset):
             root_dir: Root directory containing plate samples
             metadata_file: Name of metadata JSON file
             transform: Image transformations to apply
+            compounds_list: Pre-split list of compound entries (skips loading metadata if provided)
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
         self.metadata_path = Path(metadata_file)
         
-        if not self.metadata_path.exists():
-            raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
-        
-        # Load metadata
-        with open(self.metadata_path, 'r') as f:
-            raw_metadata = json.load(f)
-        
-        # Support two formats:
-        # 1. {"compounds": [{"id": ..., "plate": {...}}, ...]}
-        # 2. [{"Compound": ..., "plate_num": {"treated": [...], "control": [...]}, ...}, ...]
-        if isinstance(raw_metadata, list):
-            self.compounds = raw_metadata
+        if compounds_list is not None:
+            self.compounds = compounds_list
         else:
-            self.compounds = raw_metadata.get("compounds", [])
+            if not self.metadata_path.exists():
+                raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
+            
+            # Load metadata
+            with open(self.metadata_path, 'r') as f:
+                raw_metadata = json.load(f)
+            
+            # Support two formats:
+            # 1. {"compounds": [{"id": ..., "plate": {...}}, ...]}
+            # 2. [{"Compound": ..., "plate_num": {"treated": [...], "control": [...]}, ...}, ...]
+            if isinstance(raw_metadata, list):
+                self.compounds = raw_metadata
+            else:
+                self.compounds = raw_metadata.get("compounds", [])
         
         if len(self.compounds) == 0:
             raise RuntimeError(f"No compounds found in metadata: {self.metadata_path}")
