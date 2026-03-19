@@ -159,6 +159,8 @@ class TripleCheckModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
+        if loss is None:
+            return None
         self.log(
             "val/loss", loss,
             on_epoch=True, prog_bar=True, sync_dist=True,
