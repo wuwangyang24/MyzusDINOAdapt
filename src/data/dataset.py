@@ -94,9 +94,9 @@ class CompoundPlateDataset(Dataset):
         
         # Support two formats:
         # 1. {"compounds": [{"id": ..., "plate": {...}}, ...]}
-        # 2. [{"Compound": ..., "plate_num": {"treated": [wells], "control": [wells]}, ...}, ...]
+        # 2. [{"Compound": ..., "plate_num": {"treated": [...], "control": [...]}, ...}, ...]
         if isinstance(raw_metadata, list):
-            self.compounds = self._convert_well_metadata(raw_metadata)
+            self.compounds = raw_metadata
         else:
             self.compounds = raw_metadata.get("compounds", [])
         
@@ -131,14 +131,14 @@ class CompoundPlateDataset(Dataset):
             }
         """
         compound = self.compounds[idx]
-        compound_id = compound["id"]
+        compound_id = compound.get("Compound", compound.get("id", ""))
         
         # Group by plate
         plates_data = {}
         
         # Extract all plate data
         for key, plate_data in compound.items():
-            if key == "id":
+            if key in ("Compound", "id"):
                 continue
             
             plate_name = key  # e.g., "plate_1"
@@ -192,58 +192,7 @@ class CompoundPlateDataset(Dataset):
         image = Image.open(full_path).convert('RGB')
         return image
 
-    def _convert_well_metadata(self, raw_list: list) -> list:
-        """Convert user's well-based metadata format to internal image-path format.
-        
-        Input format (list):
-            [{"Compound": "xxxx", "112213": {"treated": ["well_A1"], "control": ["well_B1"]}, ...}, ...]
-        
-        Output format (list of compound dicts with image paths):
-            [{"id": "xxxx", "112213": {"treated": ["112213/well_A1/treated/img.png", ...], ...}}, ...]
-        """
-        compounds = []
-        for entry in raw_list:
-            compound_entry = {"id": str(entry.get("Compound", entry.get("id", "")))}
-            
-            for key, plate_data in entry.items():
-                if key in ("Compound", "id"):
-                    continue
-                if not isinstance(plate_data, dict):
-                    continue
-                
-                plate_entry = {}
-                for sample_type in ["treated", "control"]:
-                    if sample_type not in plate_data:
-                        continue
-                    
-                    wells = plate_data[sample_type]
-                    if not isinstance(wells, list):
-                        wells = [wells]
-                    
-                    image_paths = []
-                    for well_name in wells:
-                        well_dir = self.root_dir / str(key) / well_name / sample_type
-                        if well_dir.exists():
-                            files = sorted(well_dir.glob("*.png"))
-                            for f in files:
-                                image_paths.append(str(f.relative_to(self.root_dir)))
-                        else:
-                            # Try without sample_type subdirectory
-                            well_dir_alt = self.root_dir / str(key) / well_name
-                            if well_dir_alt.exists():
-                                files = sorted(well_dir_alt.glob("*.png"))
-                                for f in files:
-                                    image_paths.append(str(f.relative_to(self.root_dir)))
-                    
-                    if image_paths:
-                        plate_entry[sample_type] = image_paths
-                
-                if "treated" in plate_entry and "control" in plate_entry:
-                    compound_entry[key] = plate_entry
-            
-            compounds.append(compound_entry)
-        
-        return compounds
+
 
 
 def create_compound_plate_metadata(

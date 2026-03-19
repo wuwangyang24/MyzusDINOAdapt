@@ -43,10 +43,16 @@ def parse_args():
         help="Adaptation method (overrides config)"
     )
     parser.add_argument(
+        "--data-root-dir",
+        type=str,
+        default="",
+        help="Root directory prepended to --data-dir"
+    )
+    parser.add_argument(
         "--data-dir",
         type=str,
         required=True,
-        help="Path to paired bioassay data directory"
+        help="Path to paired bioassay data directory (relative to --data-root-dir if set)"
     )
     parser.add_argument(
         "--metadata",
@@ -206,6 +212,11 @@ def main():
         raise ValueError(f"Unknown adaptation method: {adaptation_method}")
 
     logger.info("Model created successfully")
+
+    # Resolve data-dir and metadata relative to data-root-dir
+    if args.data_root_dir:
+        args.data_dir = str(Path(args.data_root_dir) / args.data_dir)
+        args.metadata = str(Path(args.data_root_dir) / args.metadata)
 
     # Create datasets
     logger.info(f"Loading paired bioassay data from: {args.data_dir}")
