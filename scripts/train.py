@@ -126,6 +126,12 @@ def parse_args():
         type=int,
         help="Number of warmup epochs (overrides config)"
     )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=4,
+        help="Max images per plate per type per step (default: 4)"
+    )
 
     return parser.parse_args()
 
@@ -271,6 +277,7 @@ def main():
         loss_fn=loss_fn,
         learning_rate=config["training"]["learning_rate"],
         weight_decay=config["training"]["weight_decay"],
+        max_samples=args.max_samples,
     )
 
     # --- Callbacks ---

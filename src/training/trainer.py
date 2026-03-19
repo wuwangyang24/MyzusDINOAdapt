@@ -26,6 +26,7 @@ class TripleCheckModule(pl.LightningModule):
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
         run_validation: bool = False,
+        max_samples: int = 4,
     ):
         """
         Args:
@@ -34,6 +35,7 @@ class TripleCheckModule(pl.LightningModule):
             learning_rate: AdamW learning rate.
             weight_decay: AdamW weight decay.
             run_validation: Whether to run validation steps.
+            max_samples: Max images per plate per type per step.
         """
         super().__init__()
         self.model = model
@@ -45,6 +47,7 @@ class TripleCheckModule(pl.LightningModule):
         self.lr = learning_rate
         self.weight_decay = weight_decay
         self.run_validation = run_validation
+        self.max_samples = max_samples
         # Save lr / weight_decay to hparams; skip non-serialisable objects
         self.save_hyperparameters(ignore=["model", "loss_fn"])
 
@@ -88,8 +91,8 @@ class TripleCheckModule(pl.LightningModule):
     def _shared_step(self, batch):
         """Process batch from CompoundPlateDataset.
         
-        Randomly samples 2 plates per step to keep memory bounded.
-        Control features are computed without gradients (fixed reference).
+        Randomly samples 2 plates and a small number of images per plate
+        to keep memory bounded.
         """
         plates = batch["plates"]
         plate_names = list(plates.keys())
@@ -99,8 +102,10 @@ class TripleCheckModule(pl.LightningModule):
                 f"Need at least 2 plates per compound for Triple-Check loss, got {len(plate_names)}: {plate_names}"
             )
         
-        # Randomly sample 2 plates instead of using all — drastically reduces memory
+        # Randomly sample 2 plates
         p1, p2 = random.sample(plate_names, 2)
+        
+        max_samples = self.max_samples
         
         selected = {}
         for pname in [p1, p2]:
@@ -111,6 +116,13 @@ class TripleCheckModule(pl.LightningModule):
                 treated = treated.squeeze(0)
             if control.dim() == 5:
                 control = control.squeeze(0)
+            # Subsample images to limit memory
+            if treated.shape[0] > max_samples:
+                idx = torch.randperm(treated.shape[0])[:max_samples]
+                treated = treated[idx]
+            if control.shape[0] > max_samples:
+                idx = torch.randperm(control.shape[0])[:max_samples]
+                control = control[idx]
             # Extract features
             selected[pname] = {
                 "treated": self._extract_features(treated),
