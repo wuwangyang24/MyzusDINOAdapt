@@ -140,6 +140,12 @@ def parse_args():
         default=0.0,
         help="Fraction of metadata entries to use as validation set (0.0 = no split)"
     )
+    parser.add_argument(
+        "--val-every-steps",
+        type=int,
+        default=None,
+        help="Run validation every N training steps (default: once per epoch)"
+    )
 
     return parser.parse_args()
 
@@ -370,7 +376,7 @@ def main():
         strategy = "auto"
 
     # --- Build Lightning Trainer ---
-    trainer = pl.Trainer(
+    trainer_kwargs = dict(
         max_epochs=config["training"]["num_epochs"],
         accelerator=accelerator,
         devices=devices,
@@ -381,6 +387,9 @@ def main():
         accumulate_grad_batches=config["training"].get("gradient_accumulation_steps", 1),
         log_every_n_steps=10,
     )
+    if args.val_every_steps is not None and val_dataloader is not None:
+        trainer_kwargs["val_check_interval"] = args.val_every_steps
+    trainer = pl.Trainer(**trainer_kwargs)
 
     logger.info("Starting training...")
     trainer.fit(module, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
