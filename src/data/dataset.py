@@ -107,7 +107,24 @@ class CompoundPlateDataset(Dataset):
         
         if len(self.compounds) == 0:
             raise RuntimeError(f"No compounds found in metadata: {self.metadata_path}")
+
+        # Filter to compounds with >= 2 valid plates (both treated & control)
+        self.compounds = [
+            c for c in self.compounds
+            if self._count_valid_plates(c) >= 2
+        ]
     
+    @staticmethod
+    def _count_valid_plates(compound: dict) -> int:
+        """Count plates that have both 'treated' and 'control' keys."""
+        count = 0
+        for key, val in compound.items():
+            if key in ("Compound", "id"):
+                continue
+            if isinstance(val, dict) and "treated" in val and "control" in val:
+                count += 1
+        return count
+
     def __len__(self) -> int:
         """Return dataset size (number of compounds)."""
         return len(self.compounds)

@@ -152,6 +152,18 @@ def parse_args():
         default=1.0,
         help="Max gradient norm for clipping (default: 1.0, 0 to disable)"
     )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help="Number of DataLoader workers (overrides config; 0 = main process only)"
+    )
+    parser.add_argument(
+        "--prefetch-factor",
+        type=int,
+        default=None,
+        help="Batches pre-loaded per DataLoader worker (default: 2; lower = less RAM)"
+    )
 
     # ── Efficacy classifier validation ──
     parser.add_argument(
@@ -324,12 +336,16 @@ def main():
         transform=transform,
         compounds_list=train_compounds,
     )
+    num_workers = args.num_workers if args.num_workers is not None else config["training"]["num_workers"]
+    prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=config["training"]["batch_size"],
-        num_workers=config["training"]["num_workers"],
+        num_workers=num_workers,
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=num_workers > 0,
+        prefetch_factor=prefetch,
     )
 
     val_dataloader = None
@@ -348,9 +364,11 @@ def main():
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=config["training"]["batch_size"],
-            num_workers=config["training"]["num_workers"],
+            num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+            prefetch_factor=prefetch,
         )
     elif args.val_data_dir:
         logger.info(f"Loading validation data from: {args.val_data_dir}")
@@ -365,9 +383,11 @@ def main():
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=config["training"]["batch_size"],
-            num_workers=config["training"]["num_workers"],
+            num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+            prefetch_factor=prefetch,
         )
 
     # Create loss function and Lightning module
