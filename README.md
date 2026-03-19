@@ -111,12 +111,7 @@ training:
 
 **Using LoRA (default):**
 ```bash
-python scripts/train.py \
-  --config configs/default_config.yaml \
-  --train-dir data/train \
-  --val-dir data/val \
-  --num-epochs 20 \
-  --batch-size 32
+python MyzusDINOAdapt/scripts/train.py --config MyzusDINOAdapt/configs/default_config.yaml --train-dir Data/Myzus --num-epochs 20 --batch-size 1 --warmup_epochs 2
 ```
 
 **Using DoRA:**

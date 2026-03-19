@@ -49,7 +49,7 @@ optimizer:
 
 # Checkpoint and logging
 checkpoint:
-  save_dir: "checkpoints"
+  save_dir: "MyzusDINOAdapt/checkpoints"
   save_interval: 1  # Save every N epochs
   
 logging:
