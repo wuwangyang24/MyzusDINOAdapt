@@ -98,9 +98,7 @@ class TripleCheckModule(pl.LightningModule):
         plate_names = list(plates.keys())
         
         if len(plate_names) < 2:
-            raise ValueError(
-                f"Need at least 2 plates per compound for Triple-Check loss, got {len(plate_names)}: {plate_names}"
-            )
+            return None
         
         # Randomly sample 2 plates
         p1, p2 = random.sample(plate_names, 2)
@@ -142,6 +140,8 @@ class TripleCheckModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
+        if loss is None:
+            return None
         self.log(
             "train/loss", loss,
             on_step=True, on_epoch=True, prog_bar=True, sync_dist=True,
