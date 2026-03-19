@@ -24,6 +24,7 @@ class TripleCheckModule(pl.LightningModule):
         loss_fn: Optional[nn.Module] = None,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
+        run_validation: bool = False,
     ):
         """
         Args:
@@ -31,6 +32,7 @@ class TripleCheckModule(pl.LightningModule):
             loss_fn: Loss function (default: TripleCheckLoss with L2 distance).
             learning_rate: AdamW learning rate.
             weight_decay: AdamW weight decay.
+            run_validation: Whether to run validation steps.
         """
         super().__init__()
         self.model = model
@@ -41,6 +43,7 @@ class TripleCheckModule(pl.LightningModule):
         )
         self.lr = learning_rate
         self.weight_decay = weight_decay
+        self.run_validation = run_validation
         # Save lr / weight_decay to hparams; skip non-serialisable objects
         self.save_hyperparameters(ignore=["model", "loss_fn"])
 
@@ -92,6 +95,8 @@ class TripleCheckModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if not self.run_validation:
+            return
         loss = self._shared_step(batch)
         self.log(
             "val/loss", loss,
