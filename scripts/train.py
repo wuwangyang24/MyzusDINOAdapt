@@ -213,10 +213,14 @@ def main():
 
     logger.info("Model created successfully")
 
-    # Resolve data-dir and metadata relative to data-root-dir
+    # Resolve paths relative to data-root-dir
     if args.data_root_dir:
         args.data_dir = str(Path(args.data_root_dir) / args.data_dir)
         args.metadata = str(Path(args.data_root_dir) / args.metadata)
+    
+    # root_dir for image loading is data-root-dir (not data-dir)
+    # since metadata paths already include the subdirectory
+    image_root_dir = args.data_root_dir if args.data_root_dir else args.data_dir
 
     # Create datasets
     logger.info(f"Loading paired bioassay data from: {args.data_dir}")
@@ -225,7 +229,7 @@ def main():
         is_train=True
     )
     train_dataset = CompoundPlateDataset(
-        root_dir=args.data_dir,
+        root_dir=image_root_dir,
         metadata_file=args.metadata,
         transform=transform,
     )
