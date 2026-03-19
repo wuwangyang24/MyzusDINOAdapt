@@ -52,35 +52,68 @@ class TripleCheckModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     def _extract_features(self, img_tensor: torch.Tensor) -> torch.Tensor:
-        """Extract DINO backbone features, averaging over N untreated samples when needed.
+        """Extract DINO backbone features, averaging over N samples.
 
         Args:
-            img_tensor: ``(B, C, H, W)`` for a single sample, or
-                        ``(N, B, C, H, W)`` for N untreated samples.
+            img_tensor: ``(N, C, H, W)`` for N samples from one plate/type.
 
         Returns:
-            Feature tensor of shape ``(B, D)``.
+            Feature tensor of shape ``(D,)`` — mean over N samples.
         """
-        if img_tensor.dim() == 5:
-            n_samples, batch_size = img_tensor.shape[:2]
-            # Collapse N and B into a single batch dimension for one forward pass
-            img_flat = img_tensor.view(-1, *img_tensor.shape[2:])   # (N*B, C, H, W)
-            feats = self.model.backbone(img_flat)                    # (N*B, D)
-            feats = feats.view(n_samples, batch_size, -1).mean(0)   # (B, D)
-            return feats
-        return self.model.backbone(img_tensor)
+        feats = self.model.backbone(img_tensor)  # (N, D)
+        return feats.mean(dim=0)  # (D,)
 
     # ------------------------------------------------------------------
     # Shared forward / loss step
     # ------------------------------------------------------------------
 
     def _shared_step(self, batch):
-        img_t1, img_u1, img_t2, img_u2 = batch
-        feat_t1 = self._extract_features(img_t1)
-        feat_u1 = self._extract_features(img_u1)
-        feat_t2 = self._extract_features(img_t2)
-        feat_u2 = self._extract_features(img_u2)
-        return self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
+        """Process batch from CompoundPlateDataset.
+        
+        batch is a dict: {"id": [...], "plates": {"plate_name": {"treated": Tensor, "control": Tensor}, ...}}
+        With batch_size=1, each tensor has shape (1, N, C, H, W) where the leading dim is the batch dim
+        added by the DataLoader collate.
+        
+        For each compound, picks 2 plates and computes TripleCheckLoss between their deltas.
+        If more than 2 plates, averages loss over all plate pairs.
+        """
+        plates = batch["plates"]
+        plate_names = list(plates.keys())
+        
+        if len(plate_names) < 2:
+            raise ValueError(
+                f"Need at least 2 plates per compound for Triple-Check loss, got {len(plate_names)}: {plate_names}"
+            )
+        
+        # Extract features for each plate (squeeze batch dim from collate)
+        plate_feats = {}
+        for pname in plate_names:
+            treated = plates[pname]["treated"]
+            control = plates[pname]["control"]
+            # Remove collate batch dim: (1, N, C, H, W) -> (N, C, H, W)
+            if treated.dim() == 5:
+                treated = treated.squeeze(0)
+            if control.dim() == 5:
+                control = control.squeeze(0)
+            plate_feats[pname] = {
+                "treated": self._extract_features(treated),   # (D,)
+                "control": self._extract_features(control),   # (D,)
+            }
+        
+        # Compute loss over all plate pairs
+        total_loss = torch.tensor(0.0, device=self.device)
+        num_pairs = 0
+        for i in range(len(plate_names)):
+            for j in range(i + 1, len(plate_names)):
+                p1, p2 = plate_names[i], plate_names[j]
+                feat_t1 = plate_feats[p1]["treated"].unsqueeze(0)   # (1, D)
+                feat_u1 = plate_feats[p1]["control"].unsqueeze(0)   # (1, D)
+                feat_t2 = plate_feats[p2]["treated"].unsqueeze(0)   # (1, D)
+                feat_u2 = plate_feats[p2]["control"].unsqueeze(0)   # (1, D)
+                total_loss = total_loss + self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
+                num_pairs += 1
+        
+        return total_loss / num_pairs
 
     # ------------------------------------------------------------------
     # Lightning hooks
