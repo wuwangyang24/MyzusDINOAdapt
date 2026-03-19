@@ -51,7 +51,7 @@ class TripleCheckModule(pl.LightningModule):
     # Feature extraction
     # ------------------------------------------------------------------
 
-    def _extract_features(self, img_tensor: torch.Tensor, chunk_size: int = 8) -> torch.Tensor:
+    def _extract_features(self, img_tensor: torch.Tensor, chunk_size: int = 4) -> torch.Tensor:
         """Extract DINO backbone features, averaging over N samples.
 
         Processes images in chunks to avoid OOM on large sample sets.
