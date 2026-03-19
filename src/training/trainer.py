@@ -1,5 +1,6 @@
 """PyTorch Lightning module for DINO LoRA with Triple-Check loss."""
 
+import random
 from typing import Optional
 import torch
 import torch.nn as nn
@@ -87,12 +88,8 @@ class TripleCheckModule(pl.LightningModule):
     def _shared_step(self, batch):
         """Process batch from CompoundPlateDataset.
         
-        batch is a dict: {"id": [...], "plates": {"plate_name": {"treated": Tensor, "control": Tensor}, ...}}
-        With batch_size=1, each tensor has shape (1, N, C, H, W) where the leading dim is the batch dim
-        added by the DataLoader collate.
-        
-        For each compound, picks 2 plates and computes TripleCheckLoss between their deltas.
-        If more than 2 plates, averages loss over all plate pairs.
+        Randomly samples 2 plates per step to keep memory bounded.
+        Control features are computed without gradients (fixed reference).
         """
         plates = batch["plates"]
         plate_names = list(plates.keys())
@@ -102,9 +99,11 @@ class TripleCheckModule(pl.LightningModule):
                 f"Need at least 2 plates per compound for Triple-Check loss, got {len(plate_names)}: {plate_names}"
             )
         
-        # Extract features for each plate (squeeze batch dim from collate)
-        plate_feats = {}
-        for pname in plate_names:
+        # Randomly sample 2 plates instead of using all — drastically reduces memory
+        p1, p2 = random.sample(plate_names, 2)
+        
+        selected = {}
+        for pname in [p1, p2]:
             treated = plates[pname]["treated"]
             control = plates[pname]["control"]
             # Remove collate batch dim: (1, N, C, H, W) -> (N, C, H, W)
@@ -112,25 +111,18 @@ class TripleCheckModule(pl.LightningModule):
                 treated = treated.squeeze(0)
             if control.dim() == 5:
                 control = control.squeeze(0)
-            plate_feats[pname] = {
-                "treated": self._extract_features(treated),   # (D,)
-                "control": self._extract_features(control),   # (D,)
+            # Extract features
+            selected[pname] = {
+                "treated": self._extract_features(treated),
+                "control": self._extract_features(control),
             }
         
-        # Compute loss over all plate pairs
-        total_loss = torch.tensor(0.0, device=self.device)
-        num_pairs = 0
-        for i in range(len(plate_names)):
-            for j in range(i + 1, len(plate_names)):
-                p1, p2 = plate_names[i], plate_names[j]
-                feat_t1 = plate_feats[p1]["treated"].unsqueeze(0)   # (1, D)
-                feat_u1 = plate_feats[p1]["control"].unsqueeze(0)   # (1, D)
-                feat_t2 = plate_feats[p2]["treated"].unsqueeze(0)   # (1, D)
-                feat_u2 = plate_feats[p2]["control"].unsqueeze(0)   # (1, D)
-                total_loss = total_loss + self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
-                num_pairs += 1
+        feat_t1 = selected[p1]["treated"].unsqueeze(0)   # (1, D)
+        feat_u1 = selected[p1]["control"].unsqueeze(0)    # (1, D)
+        feat_t2 = selected[p2]["treated"].unsqueeze(0)    # (1, D)
+        feat_u2 = selected[p2]["control"].unsqueeze(0)    # (1, D)
         
-        return total_loss / num_pairs
+        return self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
 
     # ------------------------------------------------------------------
     # Lightning hooks
