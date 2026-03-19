@@ -51,17 +51,34 @@ class TripleCheckModule(pl.LightningModule):
     # Feature extraction
     # ------------------------------------------------------------------
 
-    def _extract_features(self, img_tensor: torch.Tensor) -> torch.Tensor:
+    def _extract_features(self, img_tensor: torch.Tensor, chunk_size: int = 8) -> torch.Tensor:
         """Extract DINO backbone features, averaging over N samples.
+
+        Processes images in chunks to avoid OOM on large sample sets.
 
         Args:
             img_tensor: ``(N, C, H, W)`` for N samples from one plate/type.
+            chunk_size: Number of images to process per forward pass.
 
         Returns:
             Feature tensor of shape ``(D,)`` — mean over N samples.
         """
-        feats = self.model.backbone(img_tensor)  # (N, D)
-        return feats.mean(dim=0)  # (D,)
+        n = img_tensor.shape[0]
+        if n <= chunk_size:
+            feats = self.model.backbone(img_tensor)  # (N, D)
+            return feats.mean(dim=0)  # (D,)
+        
+        # Process in chunks and accumulate weighted sum
+        feat_sum = None
+        for start in range(0, n, chunk_size):
+            chunk = img_tensor[start : start + chunk_size]
+            chunk_feats = self.model.backbone(chunk)  # (chunk_len, D)
+            chunk_mean = chunk_feats.sum(dim=0)       # (D,)
+            if feat_sum is None:
+                feat_sum = chunk_mean
+            else:
+                feat_sum = feat_sum + chunk_mean
+        return feat_sum / n  # (D,)
 
     # ------------------------------------------------------------------
     # Shared forward / loss step
