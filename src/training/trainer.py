@@ -147,7 +147,7 @@ class TripleCheckModule(pl.LightningModule):
 
     def on_after_backward(self):
         """Log gradient norms every 1000 steps."""
-        if self.global_step % 1000 != 0:
+        if self.global_step % 200 != 0:
             return
         grad_norm_total = 0.0
         for name, param in self.model.named_parameters():
