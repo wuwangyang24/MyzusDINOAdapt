@@ -49,6 +49,9 @@ class DoRALinear(nn.Module):
         
         # Original linear layer (frozen during training)
         self.linear = nn.Linear(in_features, out_features, bias=bias)
+        self.linear.weight.requires_grad = False
+        if bias:
+            self.linear.bias.requires_grad = False
         
         # DoRA weight matrices
         self.dora_a = nn.Linear(in_features, r, bias=False)
