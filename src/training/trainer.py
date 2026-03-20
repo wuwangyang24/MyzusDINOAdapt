@@ -89,38 +89,68 @@ class TripleCheckModule(pl.LightningModule):
     # Shared forward / loss step
     # ------------------------------------------------------------------
 
-    def _shared_step(self, batch):
-        """Process batch from CompoundPlateDataset.
-        
-        Batches all images into a single backbone forward pass for
-        maximum GPU utilisation.
-        """
-        plates = batch["plates"]
+    def _process_single_compound(self, compound):
+        """Extract image groups for one compound, returning 4 tensors or None."""
+        plates = compound["plates"]
         plate_names = list(plates.keys())
-        
+
         if len(plate_names) < 2:
             return None
-        
-        # Pick 2 plates
+
         if len(plate_names) > 2:
             p1, p2 = random.sample(plate_names, 2)
         else:
             p1, p2 = plate_names[0], plate_names[1]
-        
-        # Gather all image tensors, removing collate batch dim
-        groups = []  # order: treated_p1, control_p1, treated_p2, control_p2
+
+        groups = []
         for pname in [p1, p2]:
             for stype in ["treated", "control"]:
                 imgs = plates[pname][stype]
                 if imgs.dim() == 5:
                     imgs = imgs.squeeze(0)
                 groups.append(imgs)
-        
-        # Single backbone forward pass
-        feats = self._extract_features_batched(groups)
-        feat_t1, feat_u1, feat_t2, feat_u2 = [f.unsqueeze(0) for f in feats]
-        
-        return self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
+        return groups  # [treated_p1, control_p1, treated_p2, control_p2]
+
+    def _shared_step(self, batch):
+        """Process a batch of compounds from CompoundPlateDataset.
+
+        Accepts either a single compound dict (batch_size=1 with default
+        collate) or a list of compound dicts (batch_size>1 with
+        compound_collate_fn). All images across compounds are batched into
+        a single backbone forward pass for maximum GPU utilisation.
+        """
+        # Normalise to list of compounds
+        if isinstance(batch, dict):
+            compounds = [batch]
+        else:
+            compounds = batch
+
+        # Collect image groups from all valid compounds
+        all_groups = []       # flat list of image tensors
+        compound_indices = [] # which compound each group-of-4 belongs to
+        for i, compound in enumerate(compounds):
+            groups = self._process_single_compound(compound)
+            if groups is not None:
+                all_groups.extend(groups)
+                compound_indices.append(i)
+
+        if not compound_indices:
+            return None
+
+        # Single backbone forward pass for ALL images across ALL compounds
+        all_feats = self._extract_features_batched(all_groups)
+
+        # Compute per-compound losses
+        losses = []
+        for j in range(len(compound_indices)):
+            base = j * 4
+            feat_t1 = all_feats[base].unsqueeze(0)
+            feat_u1 = all_feats[base + 1].unsqueeze(0)
+            feat_t2 = all_feats[base + 2].unsqueeze(0)
+            feat_u2 = all_feats[base + 3].unsqueeze(0)
+            losses.append(self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2))
+
+        return torch.stack(losses).mean()
 
     # ------------------------------------------------------------------
     # Lightning hooks

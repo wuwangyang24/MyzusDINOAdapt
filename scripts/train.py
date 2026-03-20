@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss
-from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms
+from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms, compound_collate_fn
 from src.training import TripleCheckModule
 from src.utils import setup_logger, load_config
 from torch.utils.data import DataLoader
@@ -353,12 +353,13 @@ def main():
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=1,
+        batch_size=config["training"]["batch_size"],
         num_workers=num_workers,
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
         persistent_workers=num_workers > 0,
         prefetch_factor=prefetch,
+        collate_fn=compound_collate_fn,
     )
 
     val_dataloader = None
@@ -378,12 +379,13 @@ def main():
         )
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=1,
+            batch_size=config["training"]["batch_size"],
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
             persistent_workers=num_workers > 0,
             prefetch_factor=prefetch,
+            collate_fn=compound_collate_fn,
         )
     elif args.val_data_dir:
         logger.info(f"Loading validation data from: {args.val_data_dir}")
@@ -399,12 +401,13 @@ def main():
         )
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=1,
+            batch_size=config["training"]["batch_size"],
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
             persistent_workers=num_workers > 0,
             prefetch_factor=prefetch,
+            collate_fn=compound_collate_fn,
         )
 
     # Create loss function and Lightning module
@@ -478,10 +481,6 @@ def main():
         strategy = "auto"
 
     # --- Build Lightning Trainer ---
-    # batch_size=1 per DataLoader step (one compound), so use config batch_size
-    # as gradient accumulation to get the effective batch size.
-    accum_steps = config["training"].get("gradient_accumulation_steps", 1)
-    effective_batch = config["training"]["batch_size"] * accum_steps
     trainer_kwargs = dict(
         max_epochs=config["training"]["num_epochs"],
         accelerator=accelerator,
@@ -490,7 +489,7 @@ def main():
         precision=args.precision,
         callbacks=callbacks,
         logger=pl_loggers,
-        accumulate_grad_batches=effective_batch,
+        accumulate_grad_batches=config["training"].get("gradient_accumulation_steps", 1),
         log_every_n_steps=10,
         gradient_clip_val=args.gradient_clip_val if args.gradient_clip_val > 0 else None,
     )

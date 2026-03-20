@@ -222,6 +222,13 @@ class CompoundPlateDataset(Dataset):
         return image
 
 
+def compound_collate_fn(batch):
+    """Custom collate that keeps variable-size compound dicts as a list.
+    
+    Returns a list of compound dicts instead of trying to stack them,
+    since each compound has different numbers of images per plate.
+    """
+    return batch
 
 
 def create_compound_plate_metadata(
