@@ -327,6 +327,8 @@ def main():
     train_compounds = all_compounds
     val_compounds = None
     if args.val_ratio > 0.0:
+        if args.val_ratio >= 1.0:
+            raise ValueError(f"--val-ratio must be < 1.0, got {args.val_ratio}")
         n_val = max(1, int(len(all_compounds) * args.val_ratio))
         # Deterministic shuffle for reproducibility
         import random
