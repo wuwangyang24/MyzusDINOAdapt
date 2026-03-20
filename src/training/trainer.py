@@ -1,11 +1,14 @@
 """PyTorch Lightning module for DINO LoRA with Triple-Check loss."""
 
 import random
+import warnings
 from typing import Optional
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import pytorch_lightning as pl
+
+warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*optimizer.step.*")
 
 from src.losses import TripleCheckLoss
 
