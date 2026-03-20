@@ -439,9 +439,17 @@ def main():
         monitor="val/loss" if val_dataloader is not None else None,
         save_top_k=1,
         filename="best",
-        save_last=True,
+        save_last=False,
     )
-    callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval="step")]
+    last_checkpoint_callback = ModelCheckpoint(
+        dirpath=config["checkpoint"]["save_dir"],
+        every_n_epochs=1,
+        save_top_k=1,
+        monitor=None,
+        filename="last",
+        save_on_train_epoch_end=True,
+    )
+    callbacks = [checkpoint_callback, last_checkpoint_callback, LearningRateMonitor(logging_interval="step")]
 
     # Efficacy classifier callback (optional)
     if args.efficacy_val:
