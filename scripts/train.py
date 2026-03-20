@@ -346,6 +346,8 @@ def main():
         metadata_file=args.metadata,
         transform=transform,
         compounds_list=train_compounds,
+        num_plates=2,
+        max_samples=args.max_samples,
     )
     num_workers = args.num_workers if args.num_workers is not None else config["training"]["num_workers"]
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
@@ -371,6 +373,8 @@ def main():
             metadata_file=args.metadata,
             transform=val_transform,
             compounds_list=val_compounds,
+            num_plates=2,
+            max_samples=args.max_samples,
         )
         val_dataloader = DataLoader(
             val_dataset,
@@ -390,6 +394,8 @@ def main():
         val_dataset = CompoundPlateDataset(
             root_dir=args.val_data_dir,
             transform=val_transform,
+            num_plates=2,
+            max_samples=args.max_samples,
         )
         val_dataloader = DataLoader(
             val_dataset,

@@ -88,8 +88,9 @@ class TripleCheckModule(pl.LightningModule):
     def _shared_step(self, batch):
         """Process batch from CompoundPlateDataset.
         
-        Randomly samples 2 plates and a small number of images per plate
-        to keep memory bounded.
+        Expects the dataset to have already selected plates and subsampled
+        images (via num_plates / max_samples). Falls back to random
+        selection here if more plates than needed are present.
         """
         plates = batch["plates"]
         plate_names = list(plates.keys())
@@ -97,10 +98,11 @@ class TripleCheckModule(pl.LightningModule):
         if len(plate_names) < 2:
             return None
         
-        # Randomly sample 2 plates
-        p1, p2 = random.sample(plate_names, 2)
-        
-        max_samples = self.max_samples
+        # Pick 2 plates (dataset may already have narrowed the set)
+        if len(plate_names) > 2:
+            p1, p2 = random.sample(plate_names, 2)
+        else:
+            p1, p2 = plate_names[0], plate_names[1]
         
         selected = {}
         for pname in [p1, p2]:
@@ -111,14 +113,6 @@ class TripleCheckModule(pl.LightningModule):
                 treated = treated.squeeze(0)
             if control.dim() == 5:
                 control = control.squeeze(0)
-            # Subsample images to limit memory
-            if treated.shape[0] > max_samples:
-                idx = torch.randperm(treated.shape[0])[:max_samples]
-                treated = treated[idx]
-            if control.shape[0] > max_samples:
-                idx = torch.randperm(control.shape[0])[:max_samples]
-                control = control[idx]
-            # Extract features
             selected[pname] = {
                 "treated": self._extract_features(treated),
                 "control": self._extract_features(control),

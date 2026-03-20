@@ -73,6 +73,8 @@ class CompoundPlateDataset(Dataset):
         metadata_file: str = "metadata.json",
         transform: Optional[Callable] = None,
         compounds_list: Optional[List] = None,
+        num_plates: int = 0,
+        max_samples: int = 0,
     ):
         """
         Initialize compound-plate dataset.
@@ -82,10 +84,14 @@ class CompoundPlateDataset(Dataset):
             metadata_file: Name of metadata JSON file
             transform: Image transformations to apply
             compounds_list: Pre-split list of compound entries (skips loading metadata if provided)
+            num_plates: If >0, randomly sample this many plates per compound in __getitem__
+            max_samples: If >0, randomly sample at most this many images per plate/type
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
         self.metadata_path = Path(metadata_file)
+        self.num_plates = num_plates
+        self.max_samples = max_samples
         
         if compounds_list is not None:
             self.compounds = compounds_list
@@ -155,44 +161,46 @@ class CompoundPlateDataset(Dataset):
         compound = self.compounds[idx]
         compound_id = compound.get("Compound", compound.get("id", ""))
         
-        # Group by plate
-        plates_data = {}
-        
-        # Extract all plate data
-        for key, plate_data in compound.items():
+        # Collect valid plate names (have both treated & control paths)
+        valid_plates = []
+        for key, val in compound.items():
             if key in ("Compound", "id"):
                 continue
-            
-            plate_name = key  # e.g., "plate_1"
-            
-            if not isinstance(plate_data, dict):
-                continue
-            
+            if isinstance(val, dict) and "treated" in val and "control" in val:
+                valid_plates.append(key)
+        
+        # Subsample plates if requested
+        if self.num_plates > 0 and len(valid_plates) > self.num_plates:
+            import random
+            valid_plates = random.sample(valid_plates, self.num_plates)
+        
+        plates_data = {}
+        for plate_name in valid_plates:
+            plate_data = compound[plate_name]
             plates_data[plate_name] = {}
             
-            # Load treated and control images for this plate
             for sample_type in ["treated", "control"]:
                 if sample_type not in plate_data:
                     continue
                 
                 paths = plate_data[sample_type]
+                if not isinstance(paths, list):
+                    paths = [paths]
                 
-                # Load images
+                # Subsample image paths before loading
+                if self.max_samples > 0 and len(paths) > self.max_samples:
+                    import random
+                    paths = random.sample(paths, self.max_samples)
+                
                 images = []
-                if isinstance(paths, list):
-                    for path in paths:
-                        images.append(self._load_image(path))
-                else:
-                    images.append(self._load_image(paths))
+                for path in paths:
+                    img = self._load_image(path)
+                    if self.transform:
+                        img = self.transform(img)
+                    images.append(img)
                 
-                # Apply transforms
-                if self.transform:
-                    images = [self.transform(img) for img in images]
-                
-                # Stack into tensor
                 if images:
-                    images_tensor = torch.stack(images)  # Shape: (N, C, H, W)
-                    plates_data[plate_name][sample_type] = images_tensor
+                    plates_data[plate_name][sample_type] = torch.stack(images)
         
         # Keep only plates that have both treated and control
         plates_data = {
