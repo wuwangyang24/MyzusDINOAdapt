@@ -353,7 +353,7 @@ def main():
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=config["training"]["batch_size"],
+        batch_size=1,
         num_workers=num_workers,
         shuffle=True,
         pin_memory=torch.cuda.is_available(),
@@ -378,7 +378,7 @@ def main():
         )
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=config["training"]["batch_size"],
+            batch_size=1,
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
@@ -399,7 +399,7 @@ def main():
         )
         val_dataloader = DataLoader(
             val_dataset,
-            batch_size=config["training"]["batch_size"],
+            batch_size=1,
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
@@ -478,6 +478,10 @@ def main():
         strategy = "auto"
 
     # --- Build Lightning Trainer ---
+    # batch_size=1 per DataLoader step (one compound), so use config batch_size
+    # as gradient accumulation to get the effective batch size.
+    accum_steps = config["training"].get("gradient_accumulation_steps", 1)
+    effective_batch = config["training"]["batch_size"] * accum_steps
     trainer_kwargs = dict(
         max_epochs=config["training"]["num_epochs"],
         accelerator=accelerator,
@@ -486,7 +490,7 @@ def main():
         precision=args.precision,
         callbacks=callbacks,
         logger=pl_loggers,
-        accumulate_grad_batches=config["training"].get("gradient_accumulation_steps", 1),
+        accumulate_grad_batches=effective_batch,
         log_every_n_steps=10,
         gradient_clip_val=args.gradient_clip_val if args.gradient_clip_val > 0 else None,
     )

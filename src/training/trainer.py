@@ -52,34 +52,38 @@ class TripleCheckModule(pl.LightningModule):
     # Feature extraction
     # ------------------------------------------------------------------
 
-    def _extract_features(self, img_tensor: torch.Tensor, chunk_size: int = 4) -> torch.Tensor:
-        """Extract DINO backbone features, averaging over N samples.
+    def _extract_features_batched(self, all_images: list, chunk_size: int = 32) -> list:
+        """Extract features for multiple image groups via the backbone.
 
-        Processes images in chunks to avoid OOM on large sample sets.
+        Concatenates groups then processes in GPU-friendly chunks to avoid
+        OOM when the total image count is large (e.g. 120 with max_samples=30).
 
         Args:
-            img_tensor: ``(N, C, H, W)`` for N samples from one plate/type.
-            chunk_size: Number of images to process per forward pass.
+            all_images: List of ``(N_i, C, H, W)`` tensors, one per group.
+            chunk_size: Max images per backbone forward pass.
 
         Returns:
-            Feature tensor of shape ``(D,)`` — mean over N samples.
+            List of ``(D,)`` tensors — mean feature per group.
         """
-        n = img_tensor.shape[0]
-        if n <= chunk_size:
-            feats = self.model.backbone(img_tensor)  # (N, D)
-            return feats.mean(dim=0)  # (D,)
-        
-        # Process in chunks and accumulate weighted sum
-        feat_sum = None
-        for start in range(0, n, chunk_size):
-            chunk = img_tensor[start : start + chunk_size]
-            chunk_feats = self.model.backbone(chunk)  # (chunk_len, D)
-            chunk_mean = chunk_feats.sum(dim=0)       # (D,)
-            if feat_sum is None:
-                feat_sum = chunk_mean
-            else:
-                feat_sum = feat_sum + chunk_mean
-        return feat_sum / n  # (D,)
+        sizes = [t.shape[0] for t in all_images]
+        big_batch = torch.cat(all_images, dim=0)        # (sum(N_i), C, H, W)
+        total = big_batch.shape[0]
+
+        # Forward in chunks
+        if total <= chunk_size:
+            all_feats = self.model.backbone(big_batch)
+        else:
+            feat_parts = []
+            for start in range(0, total, chunk_size):
+                feat_parts.append(self.model.backbone(big_batch[start:start + chunk_size]))
+            all_feats = torch.cat(feat_parts, dim=0)    # (total, D)
+
+        results = []
+        offset = 0
+        for n in sizes:
+            results.append(all_feats[offset : offset + n].mean(dim=0))  # (D,)
+            offset += n
+        return results
 
     # ------------------------------------------------------------------
     # Shared forward / loss step
@@ -88,9 +92,8 @@ class TripleCheckModule(pl.LightningModule):
     def _shared_step(self, batch):
         """Process batch from CompoundPlateDataset.
         
-        Expects the dataset to have already selected plates and subsampled
-        images (via num_plates / max_samples). Falls back to random
-        selection here if more plates than needed are present.
+        Batches all images into a single backbone forward pass for
+        maximum GPU utilisation.
         """
         plates = batch["plates"]
         plate_names = list(plates.keys())
@@ -98,30 +101,24 @@ class TripleCheckModule(pl.LightningModule):
         if len(plate_names) < 2:
             return None
         
-        # Pick 2 plates (dataset may already have narrowed the set)
+        # Pick 2 plates
         if len(plate_names) > 2:
             p1, p2 = random.sample(plate_names, 2)
         else:
             p1, p2 = plate_names[0], plate_names[1]
         
-        selected = {}
+        # Gather all image tensors, removing collate batch dim
+        groups = []  # order: treated_p1, control_p1, treated_p2, control_p2
         for pname in [p1, p2]:
-            treated = plates[pname]["treated"]
-            control = plates[pname]["control"]
-            # Remove collate batch dim: (1, N, C, H, W) -> (N, C, H, W)
-            if treated.dim() == 5:
-                treated = treated.squeeze(0)
-            if control.dim() == 5:
-                control = control.squeeze(0)
-            selected[pname] = {
-                "treated": self._extract_features(treated),
-                "control": self._extract_features(control),
-            }
+            for stype in ["treated", "control"]:
+                imgs = plates[pname][stype]
+                if imgs.dim() == 5:
+                    imgs = imgs.squeeze(0)
+                groups.append(imgs)
         
-        feat_t1 = selected[p1]["treated"].unsqueeze(0)   # (1, D)
-        feat_u1 = selected[p1]["control"].unsqueeze(0)    # (1, D)
-        feat_t2 = selected[p2]["treated"].unsqueeze(0)    # (1, D)
-        feat_u2 = selected[p2]["control"].unsqueeze(0)    # (1, D)
+        # Single backbone forward pass
+        feats = self._extract_features_batched(groups)
+        feat_t1, feat_u1, feat_t2, feat_u2 = [f.unsqueeze(0) for f in feats]
         
         return self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2)
 

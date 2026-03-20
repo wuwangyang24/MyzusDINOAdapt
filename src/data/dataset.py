@@ -92,6 +92,7 @@ class CompoundPlateDataset(Dataset):
         self.metadata_path = Path(metadata_file)
         self.num_plates = num_plates
         self.max_samples = max_samples
+        self._cache: Dict[str, torch.Tensor] = {}  # path -> transformed tensor
         
         if compounds_list is not None:
             self.compounds = compounds_list
@@ -194,10 +195,14 @@ class CompoundPlateDataset(Dataset):
                 
                 images = []
                 for path in paths:
-                    img = self._load_image(path)
-                    if self.transform:
-                        img = self.transform(img)
-                    images.append(img)
+                    if path in self._cache:
+                        images.append(self._cache[path])
+                    else:
+                        img = self._load_image(path)
+                        if self.transform:
+                            img = self.transform(img)
+                        self._cache[path] = img
+                        images.append(img)
                 
                 if images:
                     plates_data[plate_name][sample_type] = torch.stack(images)
