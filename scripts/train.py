@@ -468,6 +468,14 @@ def main():
 
     wandb_cfg = config["logging"].get("wandb", {})
     if WANDB_AVAILABLE and wandb_cfg.get("enabled", False):
+        # Log all config + CLI args + computed values
+        wandb_config = dict(config)
+        wandb_config["cli"] = vars(args)
+        wandb_config.update({
+            "warmup_steps": warmup_steps,
+            "total_steps": total_steps,
+            "steps_per_epoch": steps_per_epoch,
+        })
         pl_loggers.append(
             WandbLogger(
                 project=wandb_cfg.get("project", "dino-lora-triple-check"),
@@ -475,6 +483,7 @@ def main():
                 name=wandb_cfg.get("name"),
                 tags=wandb_cfg.get("tags", []),
                 notes=wandb_cfg.get("notes", ""),
+                config=wandb_config,
             )
         )
 
