@@ -137,14 +137,8 @@ class TripleCheckModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
-        if loss is None or torch.isnan(loss) or torch.isinf(loss):
-            # Return a zero loss that still has grad to avoid corrupting the model
-            zero = torch.tensor(0.0, device=self.device, requires_grad=True)
-            self.log(
-                "train/loss", 0.0,
-                on_step=True, on_epoch=True, prog_bar=True, sync_dist=True,
-            )
-            return zero
+        if loss is None:
+            return None
         self.log(
             "train/loss", loss,
             on_step=True, on_epoch=True, prog_bar=True, sync_dist=True,
