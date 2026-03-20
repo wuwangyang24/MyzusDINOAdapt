@@ -236,5 +236,6 @@ class TripleCheckModule(pl.LightningModule):
                 "scheduler": scheduler,
                 "interval": "step",
                 "frequency": 1,
+                "strict": False,
             },
         }
