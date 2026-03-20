@@ -224,7 +224,7 @@ class TripleCheckModule(pl.LightningModule):
         def lr_lambda(current_step: int) -> float:
             if current_step < warmup:
                 # Linear warmup: 0 → 1
-                return current_step / max(1, warmup)
+                return max(current_step / max(1, warmup), 1e-7)
             # Cosine decay: 1 → 0
             progress = (current_step - warmup) / max(1, total - warmup)
             return 0.5 * (1.0 + math.cos(math.pi * progress))
