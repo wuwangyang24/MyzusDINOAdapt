@@ -18,7 +18,7 @@ from src.losses import TripleCheckLoss
 from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms, compound_collate_fn
 from src.training import TripleCheckModule
 from src.utils import setup_logger, load_config
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 
 try:
     from pytorch_lightning.loggers import WandbLogger
@@ -163,6 +163,11 @@ def parse_args():
         type=int,
         default=None,
         help="Batches pre-loaded per DataLoader worker (default: 2; lower = less RAM)"
+    )
+    parser.add_argument(
+        "--random_sampler",
+        action="store_true",
+        help="Sample compounds with replacement (allows overlap across batches)"
     )
 
     # ── Efficacy classifier validation ──
@@ -351,16 +356,33 @@ def main():
     )
     num_workers = args.num_workers if args.num_workers is not None else config["training"]["num_workers"]
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=config["training"]["batch_size"],
-        num_workers=num_workers,
-        shuffle=True,
-        pin_memory=torch.cuda.is_available(),
-        persistent_workers=num_workers > 0,
-        prefetch_factor=prefetch,
-        collate_fn=compound_collate_fn,
-    )
+    if args.random_sampler:
+        train_sampler = RandomSampler(
+            train_dataset,
+            replacement=True,
+            num_samples=len(train_dataset),
+        )
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=config["training"]["batch_size"],
+            num_workers=num_workers,
+            sampler=train_sampler,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+            prefetch_factor=prefetch,
+            collate_fn=compound_collate_fn,
+        )
+    else:
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=config["training"]["batch_size"],
+            num_workers=num_workers,
+            shuffle=True,
+            pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
+            prefetch_factor=prefetch,
+            collate_fn=compound_collate_fn,
+        )
 
     val_dataloader = None
     if val_compounds is not None:
