@@ -26,6 +26,8 @@ class TripleCheckModule(pl.LightningModule):
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
         max_samples: int = 4,
+        warmup_steps: int = 0,
+        total_steps: int = 0,
     ):
         """
         Args:
@@ -34,6 +36,8 @@ class TripleCheckModule(pl.LightningModule):
             learning_rate: AdamW learning rate.
             weight_decay: AdamW weight decay.
             max_samples: Max images per plate per type per step.
+            warmup_steps: Number of linear warmup steps.
+            total_steps: Total training steps (for cosine decay).
         """
         super().__init__()
         self.model = model
@@ -45,6 +49,8 @@ class TripleCheckModule(pl.LightningModule):
         self.lr = learning_rate
         self.weight_decay = weight_decay
         self.max_samples = max_samples
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
         # Save lr / weight_decay to hparams; skip non-serialisable objects
         self.save_hyperparameters(ignore=["model", "loss_fn"])
 
@@ -200,8 +206,35 @@ class TripleCheckModule(pl.LightningModule):
                 "No trainable parameters found. "
                 "Make sure LoRA/DoRA layers have requires_grad=True."
             )
-        return optim.AdamW(
+        optimizer = optim.AdamW(
             trainable_params,
             lr=self.lr,
             weight_decay=self.weight_decay,
         )
+
+        if self.total_steps <= 0:
+            return optimizer
+
+        from torch.optim.lr_scheduler import LambdaLR
+        import math
+
+        warmup = self.warmup_steps
+        total = self.total_steps
+
+        def lr_lambda(current_step: int) -> float:
+            if current_step < warmup:
+                # Linear warmup: 0 → 1
+                return current_step / max(1, warmup)
+            # Cosine decay: 1 → 0
+            progress = (current_step - warmup) / max(1, total - warmup)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        scheduler = LambdaLR(optimizer, lr_lambda)
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }

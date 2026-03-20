@@ -28,9 +28,9 @@ dora:
 training:
   num_epochs: 10
   batch_size: 1
-  learning_rate: 5.0e-4
+  learning_rate: 5.0e-5
   weight_decay: 1.0e-4
-  warmup_epochs: 1
+  warmup_steps: 100
   num_workers: 4
   gradient_accumulation_steps: 1
 

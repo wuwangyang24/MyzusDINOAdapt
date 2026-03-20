@@ -124,9 +124,9 @@ def parse_args():
         help="Training precision: 32 (full), 16-mixed (AMP float16), bf16-mixed (AMP bfloat16)"
     )
     parser.add_argument(
-        "--warmup_epochs",
+        "--warmup_steps",
         type=int,
-        help="Number of warmup epochs (overrides config)"
+        help="Number of warmup steps (overrides config)"
     )
     parser.add_argument(
         "--max_samples",
@@ -231,8 +231,8 @@ def main():
         config["data"]["num_untreated_samples"] = args.num_untreated_samples
     if args.device:
         config["device"] = args.device
-    if args.warmup_epochs:
-        config["training"]["warmup_epochs"] = args.warmup_epochs
+    if args.warmup_steps:
+        config["training"]["warmup_steps"] = args.warmup_steps
 
     # Set default num_untreated_samples if not specified
     config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
@@ -416,12 +416,20 @@ def main():
         temperature=1.0,
         reduction="mean",
     )
+    # Compute step counts for LR scheduler
+    steps_per_epoch = len(train_dataloader)
+    num_epochs = config["training"]["num_epochs"]
+    total_steps = steps_per_epoch * num_epochs
+    warmup_steps = config["training"].get("warmup_steps", 100)
+
     module = TripleCheckModule(
         model=model,
         loss_fn=loss_fn,
         learning_rate=config["training"]["learning_rate"],
         weight_decay=config["training"]["weight_decay"],
         max_samples=args.max_samples,
+        warmup_steps=warmup_steps,
+        total_steps=total_steps,
     )
 
     # --- Callbacks ---
@@ -433,7 +441,7 @@ def main():
         filename="best",
         save_last=True,
     )
-    callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval="epoch")]
+    callbacks = [checkpoint_callback, LearningRateMonitor(logging_interval="step")]
 
     # Efficacy classifier callback (optional)
     if args.efficacy_val:
