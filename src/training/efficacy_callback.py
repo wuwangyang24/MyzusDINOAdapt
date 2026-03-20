@@ -241,13 +241,13 @@ class EfficacyClassifierCallback(pl.Callback):
         backbone.train()
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if self.every_n_steps == 0:
+        if self.every_n_steps == 0 and trainer.is_global_zero:
             self._run_efficacy_eval(trainer, pl_module)
 
     def on_train_batch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule, outputs, batch, batch_idx) -> None:
-        if self.every_n_steps > 0 and trainer.global_step % self.every_n_steps == 0:
+        if self.every_n_steps > 0 and trainer.global_step % self.every_n_steps == 0 and trainer.is_global_zero:
             self._run_efficacy_eval(trainer, pl_module)
 
     def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        # Still fires if a val_dataloader is present
-        self._run_efficacy_eval(trainer, pl_module)
+        if trainer.is_global_zero:
+            self._run_efficacy_eval(trainer, pl_module)

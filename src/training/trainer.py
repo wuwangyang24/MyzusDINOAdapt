@@ -146,7 +146,7 @@ class TripleCheckModule(pl.LightningModule):
         return loss
 
     def on_after_backward(self):
-        """Log gradient norms every 1000 steps."""
+        """Log gradient norms every 200 steps."""
         if self.global_step % 200 != 0:
             return
         grad_norm_total = 0.0
@@ -154,8 +154,8 @@ class TripleCheckModule(pl.LightningModule):
             if param.requires_grad and param.grad is not None:
                 grad_norm = param.grad.norm(2).item()
                 grad_norm_total += grad_norm ** 2
-                self.log(f"grad_norm/{name}", grad_norm, on_step=True, on_epoch=False)
-        self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True)
+                self.log(f"grad_norm/{name}", grad_norm, on_step=True, on_epoch=False, rank_zero_only=True)
+        self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True, rank_zero_only=True)
 
     def validation_step(self, batch, batch_idx):
         loss = self._shared_step(batch)
