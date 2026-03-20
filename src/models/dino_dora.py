@@ -143,6 +143,20 @@ class DINOWithDoRA(nn.Module):
                     module.fc1.linear.weight.data = original_fc1.weight.data.clone()
                     if original_fc1.bias is not None:
                         module.fc1.linear.bias.data = original_fc1.bias.data.clone()
+                # Replace fc2 (second linear layer in MLP)
+                if isinstance(module.fc2, nn.Linear):
+                    original_fc2 = module.fc2
+                    module.fc2 = DoRALinear(
+                        original_fc2.in_features,
+                        original_fc2.out_features,
+                        r=self.dora_config.r,
+                        dora_alpha=self.dora_config.dora_alpha,
+                        dora_dropout=self.dora_config.dora_dropout,
+                        bias=original_fc2.bias is not None,
+                    )
+                    module.fc2.linear.weight.data = original_fc2.weight.data.clone()
+                    if original_fc2.bias is not None:
+                        module.fc2.linear.bias.data = original_fc2.bias.data.clone()
     
     def _add_classification_head(self, num_classes: int) -> None:
         """Add classification head on top of DINO backbone."""
