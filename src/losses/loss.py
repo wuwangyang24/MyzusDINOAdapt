@@ -83,13 +83,15 @@ class TripleCheckLoss(nn.Module):
             return loss
     
     def _l2_distance(self, delta_1: torch.Tensor, delta_2: torch.Tensor) -> torch.Tensor:
-        """Compute L2 distance between deltas."""
-        # L2 distance: ||Δ₁ - Δ₂||₂
-        distance = torch.norm(delta_1 - delta_2, p=2, dim=1)
+        """Compute L2 distance between deltas in float32 to prevent fp16 overflow."""
+        diff = (delta_1 - delta_2).float()
+        distance = torch.norm(diff, p=2, dim=1)
         return distance
     
     def _cosine_distance(self, delta_1: torch.Tensor, delta_2: torch.Tensor) -> torch.Tensor:
-        """Compute cosine distance between deltas."""
+        """Compute cosine distance between deltas in float32 to prevent fp16 overflow."""
+        delta_1 = delta_1.float()
+        delta_2 = delta_2.float()
         eps = 1e-6
         # Clamp norms to avoid division by near-zero when deltas vanish
         norm_1 = delta_1.norm(p=2, dim=1, keepdim=True).clamp(min=eps)
@@ -105,6 +107,8 @@ class TripleCheckLoss(nn.Module):
     
     def _kl_divergence(self, delta_1: torch.Tensor, delta_2: torch.Tensor) -> torch.Tensor:
         """Compute KL divergence between softmax-normalized deltas."""
+        delta_1 = delta_1.float()
+        delta_2 = delta_2.float()
         # Convert to probabilities using softmax (along feature dimension)
         p = F.softmax(delta_1 / self.temperature, dim=1)
         q = F.softmax(delta_2 / self.temperature, dim=1)

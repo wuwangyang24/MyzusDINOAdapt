@@ -130,6 +130,8 @@ class TripleCheckModule(pl.LightningModule):
         loss = self._shared_step(batch)
         if loss is None:
             return None
+        if torch.isnan(loss) or torch.isinf(loss):
+            return None
         self.log(
             "train/loss", loss,
             on_step=True, on_epoch=True, prog_bar=True, sync_dist=True,
