@@ -151,6 +151,8 @@ class TripleCheckModule(pl.LightningModule):
 
         # Compute per-compound losses
         losses = []
+        delta_norms = []
+        feat_norms = []
         for j in range(len(compound_indices)):
             base = j * 4
             feat_t1 = all_feats[base].unsqueeze(0)
@@ -159,7 +161,35 @@ class TripleCheckModule(pl.LightningModule):
             feat_u2 = all_feats[base + 3].unsqueeze(0)
             losses.append(self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2))
 
-        return torch.stack(losses).mean()
+            # Diagnostics: delta and feature norms
+            delta1 = (feat_t1 - feat_u1).float()
+            delta2 = (feat_t2 - feat_u2).float()
+            delta_norms.append(delta1.norm().item())
+            delta_norms.append(delta2.norm().item())
+            feat_norms.append(feat_t1.float().norm().item())
+            feat_norms.append(feat_u1.float().norm().item())
+            feat_norms.append(feat_t2.float().norm().item())
+            feat_norms.append(feat_u2.float().norm().item())
+
+        loss = torch.stack(losses).mean()
+
+        # Log diagnostics every 50 steps
+        if self.global_step % 50 == 0:
+            all_feat_tensor = torch.stack([f.float() for f in all_feats])
+            self.log("diag/feat_norm_mean", sum(feat_norms) / len(feat_norms),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/feat_std", all_feat_tensor.std().item(),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            # Cosine similarity between all feature pairs to detect collapse
+            normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
+            cos_sim = (normed @ normed.T).fill_diagonal_(0)
+            n = cos_sim.shape[0]
+            self.log("diag/cos_sim_mean", cos_sim.sum().item() / (n * (n - 1)),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+
+        return loss
 
     # ------------------------------------------------------------------
     # Lightning hooks
