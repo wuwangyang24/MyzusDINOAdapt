@@ -443,7 +443,7 @@ def main():
     )
     last_checkpoint_callback = ModelCheckpoint(
         dirpath=config["checkpoint"]["save_dir"],
-        every_n_epochs=1,
+        every_n_epochs=config["training"]["num_epochs"],
         save_top_k=1,
         monitor=None,
         filename="last",
