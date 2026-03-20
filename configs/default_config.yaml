@@ -20,8 +20,8 @@ lora:
 
 # DoRA configuration
 dora:
-  r: 8  # DoRA rank
-  dora_alpha: 8.0  # Scaling factor
+  r: 4  # DoRA rank
+  dora_alpha: 4.0  # Scaling factor
   dora_dropout: 0.1  # Dropout rate
 
 # Training configuration

@@ -180,7 +180,7 @@ class TripleCheckModule(pl.LightningModule):
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
-            self.log("diag/feat_std", all_feat_tensor.std().item(),
+            self.log("diag/feat_std", all_feat_tensor.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             # Cosine similarity between all feature pairs to detect collapse
             normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
