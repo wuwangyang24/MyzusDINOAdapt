@@ -162,9 +162,11 @@ class TripleCheckModule(pl.LightningModule):
             return None
         if torch.isnan(loss) or torch.isinf(loss):
             return None
+        bs = len(batch) if isinstance(batch, list) else 1
         self.log(
             "train/loss", loss,
             on_step=True, on_epoch=True, prog_bar=True, sync_dist=True,
+            batch_size=bs,
         )
         return loss
 
@@ -184,9 +186,11 @@ class TripleCheckModule(pl.LightningModule):
         loss = self._shared_step(batch)
         if loss is None:
             return None
+        bs = len(batch) if isinstance(batch, list) else 1
         self.log(
             "val/loss", loss,
             on_epoch=True, prog_bar=True, sync_dist=True,
+            batch_size=bs,
         )
 
     def configure_optimizers(self):
