@@ -229,6 +229,13 @@ def _load_checkpoint(model: nn.Module, weights_path: str) -> None:
             state_dict = ckpt   # raw state-dict
     else:
         state_dict = ckpt
+
+    # Lightning wraps the model under a 'model.' prefix — strip it
+    state_dict = {
+        k.replace("model.", "", 1) if k.startswith("model.") else k: v
+        for k, v in state_dict.items()
+    }
+
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing:
         print(f"  [WARN] Missing keys in checkpoint ({len(missing)}): "
