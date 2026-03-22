@@ -518,16 +518,19 @@ def main():
             "total_steps": total_steps,
             "steps_per_epoch": steps_per_epoch,
         })
-        pl_loggers.append(
-            WandbLogger(
-                project=wandb_cfg.get("project", "dino-lora-triple-check"),
-                entity=wandb_cfg.get("entity"),
-                name=wandb_cfg.get("name"),
-                tags=wandb_cfg.get("tags", []),
-                notes=wandb_cfg.get("notes", ""),
-                config=wandb_config,
-            )
+        wandb_logger = WandbLogger(
+            project=wandb_cfg.get("project", "dino-lora-triple-check"),
+            entity=wandb_cfg.get("entity"),
+            name=wandb_cfg.get("name"),
+            tags=wandb_cfg.get("tags", []),
+            notes=wandb_cfg.get("notes", ""),
+            config=wandb_config,
         )
+        # Use trainer/global_step as x-axis for all metrics so the
+        # step counter is monotonically increasing in W&B charts.
+        wandb_logger.experiment.define_metric("trainer/global_step")
+        wandb_logger.experiment.define_metric("*", step_metric="trainer/global_step")
+        pl_loggers.append(wandb_logger)
 
     # --- Accelerator / devices / strategy ---
     use_cuda = config.get("device", "cuda") == "cuda" and torch.cuda.is_available()
