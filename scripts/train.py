@@ -45,6 +45,16 @@ def parse_args():
         help="Adaptation method (overrides config)"
     )
     parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=[
+            "dino_vits8", "dino_vits16", "dino_vitb8", "dino_vitb16",
+            "dinov2_vits14", "dinov2_vitb14", "dinov2_vitl14", "dinov2_vitg14",
+            "dinov2_vits14_reg", "dinov2_vitb14_reg", "dinov2_vitl14_reg", "dinov2_vitg14_reg",
+        ],
+        help="DINO/DINOv2 backbone variant (overrides config)"
+    )
+    parser.add_argument(
         "--data-root-dir",
         type=str,
         default="",
@@ -226,6 +236,8 @@ def main():
     # Override config with command line arguments
     if args.method:
         config["adaptation"]["method"] = args.method
+    if args.backbone:
+        config["model"]["backbone"] = args.backbone
     if args.num_epochs:
         config["training"]["num_epochs"] = args.num_epochs
     if args.batch_size:
