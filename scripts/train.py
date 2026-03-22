@@ -175,6 +175,16 @@ def parse_args():
         help="Batches pre-loaded per DataLoader worker (default: 2; lower = less RAM)"
     )
     parser.add_argument(
+        "--lora-r",
+        type=int,
+        help="LoRA/DoRA rank (overrides config)"
+    )
+    parser.add_argument(
+        "--lora-alpha",
+        type=float,
+        help="LoRA/DoRA alpha scaling factor (overrides config)"
+    )
+    parser.add_argument(
         "--random_sampler",
         action="store_true",
         help="Sample compounds with replacement (allows overlap across batches)"
@@ -250,6 +260,12 @@ def main():
         config["device"] = args.device
     if args.warmup_steps:
         config["training"]["warmup_steps"] = args.warmup_steps
+    if args.lora_r is not None:
+        config["lora"]["r"] = args.lora_r
+        config["dora"]["r"] = args.lora_r
+    if args.lora_alpha is not None:
+        config["lora"]["lora_alpha"] = args.lora_alpha
+        config["dora"]["dora_alpha"] = args.lora_alpha
 
     # Set default num_untreated_samples if not specified
     config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
