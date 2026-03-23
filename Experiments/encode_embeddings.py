@@ -698,6 +698,10 @@ def main() -> None:
         model_tag = f"custom_vae_dim{args.vae_latent_dim}"
     else:
         model_tag = f"{args.backbone}_{args.model_type}"
+        if args.model_type == "dino_lora":
+            model_tag += f"_r{args.lora_r}a{args.lora_alpha}"
+        elif args.model_type == "dino_dora":
+            model_tag += f"_r{args.dora_r}a{args.dora_alpha}"
         if args.return_reg_tokens:
             model_tag += "_reg"
     output_path = output_path.with_name(f"{stem}_{model_tag}{suffix}")
