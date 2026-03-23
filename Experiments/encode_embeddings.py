@@ -594,6 +594,10 @@ def parse_args() -> argparse.Namespace:
         "--device", type=str, default=None,
         help="Torch device (e.g. 'cuda', 'cuda:1', 'cpu'). Auto-detected if not specified.",
     )
+    parser.add_argument(
+        "--name_suffix", type=str, default=None,
+        help="Custom suffix appended to the output filename (e.g. '_exp1').",
+    )
     return parser.parse_args()
 
 
@@ -704,6 +708,8 @@ def main() -> None:
             model_tag += f"_r{args.dora_r}a{args.dora_alpha}"
         if args.return_reg_tokens:
             model_tag += "_reg"
+    if args.name_suffix:
+        model_tag += f"_{args.name_suffix}"
     output_path = output_path.with_name(f"{stem}_{model_tag}{suffix}")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(embeddings, output_path)
