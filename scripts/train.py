@@ -483,8 +483,13 @@ def main():
     )
 
     # --- Callbacks ---
+    backbone = config["model"]["backbone"]
+    r = config[adaptation_method]["r"]
+    alpha = config[adaptation_method].get(f"{adaptation_method}_alpha", r)
+    alpha_str = int(alpha) if alpha == int(alpha) else alpha
+    ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / f"{backbone}_{adaptation_method}_r{r}a{alpha_str}"
     checkpoint_callback = ModelCheckpoint(
-        dirpath=config["checkpoint"]["save_dir"],
+        dirpath=str(ckpt_subdir),
         every_n_epochs=config["checkpoint"]["save_interval"],
         monitor="val/loss" if val_dataloader is not None else None,
         save_top_k=1,
@@ -492,7 +497,7 @@ def main():
         save_last=False,
     )
     last_checkpoint_callback = ModelCheckpoint(
-        dirpath=config["checkpoint"]["save_dir"],
+        dirpath=str(ckpt_subdir),
         every_n_epochs=config["training"]["num_epochs"],
         save_top_k=1,
         monitor=None,
