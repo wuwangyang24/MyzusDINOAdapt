@@ -173,27 +173,20 @@ class TripleCheckModule(pl.LightningModule):
 
         loss = torch.stack(losses).mean()
 
-        # Log diagnostics every 50 optimizer steps, training only.
-        # With gradient accumulation, _shared_step is called per micro-batch
-        # but global_step stays constant across the accumulation window.
-        # Use batch_idx to fire only on the first micro-batch of each window.
-        # Log directly to the logger to bypass PL's log_every_n_steps buffering
-        # so metrics appear at the correct global_step.
-        accum = self.trainer.accumulate_grad_batches if self.trainer else 1
-        is_first_microbatch = (batch_idx is None) or (batch_idx % accum == 0)
-        if self.training and is_first_microbatch and self.global_step % 50 == 0:
+        # Log diagnostics on the same schedule as PL's log_every_n_steps
+        if self.training:
             all_feat_tensor = torch.stack([f.float() for f in all_feats])
+            self.log("diag/feat_norm_mean", sum(feat_norms) / len(feat_norms),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/feat_std", all_feat_tensor.std(dim=0).mean().item(),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
             normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
             cos_sim = (normed @ normed.T).fill_diagonal_(0)
             n = cos_sim.shape[0]
-            diag_metrics = {
-                "diag/feat_norm_mean": sum(feat_norms) / len(feat_norms),
-                "diag/delta_norm_mean": sum(delta_norms) / len(delta_norms),
-                "diag/feat_std": all_feat_tensor.std(dim=0).mean().item(),
-                "diag/cos_sim_mean": cos_sim.sum().item() / (n * (n - 1)),
-            }
-            for logger in self.loggers:
-                logger.log_metrics(diag_metrics, step=self.global_step)
+            self.log("diag/cos_sim_mean", cos_sim.sum().item() / (n * (n - 1)),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
 
         return loss
 
