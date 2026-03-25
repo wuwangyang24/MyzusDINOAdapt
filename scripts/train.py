@@ -497,7 +497,10 @@ def main():
     r = config[adaptation_method]["r"]
     alpha = config[adaptation_method].get(f"{adaptation_method}_alpha", r)
     alpha_str = int(alpha) if alpha == int(alpha) else alpha
-    ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / f"{backbone}_{adaptation_method}_r{r}a{alpha_str}"
+    ckpt_tag = f"{backbone}_{adaptation_method}_r{r}a{alpha_str}"
+    if config[adaptation_method].get("train_layernorm", False):
+        ckpt_tag += "_LN"
+    ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(ckpt_subdir),
         every_n_epochs=config["checkpoint"]["save_interval"],
