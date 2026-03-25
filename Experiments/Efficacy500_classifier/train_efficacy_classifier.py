@@ -410,9 +410,17 @@ def _run_xgboost(
             xgb_params["scale_pos_weight"] = spw
             print(f"  XGBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
 
+    # ── Inference features (built early so tuning can evaluate on them) ──
+    X_inf, y_inf, cids_inf = build_mean_latent_features(
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
+    if X_inf.shape[0] == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
     # ── Optional hyperparameter tuning ───────────────────────────────────
     if args.tune:
-        xgb_params = tune_xgboost(X_train, y_train, args)
+        xgb_params = tune_xgboost(X_train, y_train, X_inf, y_inf, args)
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
@@ -457,14 +465,6 @@ def _run_xgboost(
     print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
     clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
     print("Training done.\n")
-
-    # ── Inference features ───────────────────────────────────────────────
-    X_inf, y_inf, cids_inf = build_mean_latent_features(
-        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
-    )
-    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
-    if X_inf.shape[0] == 0:
-        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
 
     inf_preds = clf.predict(X_inf)
     inf_proba = clf.predict_proba(X_inf)[:, 1]
@@ -520,9 +520,17 @@ def _run_catboost(
             cb_params["scale_pos_weight"] = spw
             print(f"  CatBoost scale_pos_weight={spw:.3f} (neg={n_neg}, pos={n_pos})")
 
+    # ── Inference features (built early so tuning can evaluate on them) ──
+    X_inf, y_inf, cids_inf = build_mean_latent_features(
+        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
+    )
+    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
+    if X_inf.shape[0] == 0:
+        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
+
     # ── Optional hyperparameter tuning ───────────────────────────────────
     if args.tune:
-        cb_params = tune_catboost(X_train, y_train, args)
+        cb_params = tune_catboost(X_train, y_train, X_inf, y_inf, args)
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
@@ -566,14 +574,6 @@ def _run_catboost(
     print(f"\nTraining final CatBoost on all {X_train.shape[0]} training compounds ...")
     clf.fit(X_train, y_train, eval_set=(X_train, y_train), verbose=500)
     print("Training done.\n")
-
-    # ── Inference features ───────────────────────────────────────────────
-    X_inf, y_inf, cids_inf = build_mean_latent_features(
-        inf_embeddings, inf_cid2label, args.subtract_control, args.normalize_before_subtract,
-    )
-    print(f"  {X_inf.shape[0]} inference compounds, feature dim {X_inf.shape[1]}.")
-    if X_inf.shape[0] == 0:
-        raise RuntimeError("No compounds matched between inference embeddings and efficacy.")
 
     inf_preds = clf.predict(X_inf).astype(int).ravel()
     inf_proba = clf.predict_proba(X_inf)[:, 1]

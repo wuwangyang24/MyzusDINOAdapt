@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import roc_auc_score, f1_score
-from sklearn.model_selection import ParameterSampler, StratifiedKFold, cross_val_score
+from sklearn.model_selection import ParameterSampler
 from tqdm import tqdm
 
 try:
@@ -118,9 +118,11 @@ def tune_abmil(
 def tune_xgboost(
     X_train: np.ndarray,
     y_train: np.ndarray,
+    X_eval: np.ndarray,
+    y_eval: np.ndarray,
     args: argparse.Namespace,
 ) -> Dict:
-    """Random search over XGBoost hyperparameters, return best config."""
+    """Random search over XGBoost hyperparameters, evaluated on inference set."""
     if not _HAS_XGBOOST:
         raise ImportError("xgboost is required for tuning. Install with: pip install xgboost")
 
@@ -136,13 +138,13 @@ def tune_xgboost(
         "reg_lambda": [0.5, 1.0, 5.0],
     }
 
-    print(f"\nHyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
+    print(f"\nXGBoost hyperparameter tuning ({args.tune_iter} iterations, inference-set eval) ...")
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
     param_list = list(ParameterSampler(
         param_distributions, n_iter=args.tune_iter, random_state=args.seed,
     ))
     best_score, best_params = -1, None
+    results = []
 
     for i, params in enumerate(tqdm(param_list, desc="Tuning XGBoost"), 1):
         tmp_clf = xgb.XGBClassifier(
@@ -153,15 +155,17 @@ def tune_xgboost(
             random_state=args.seed,
             n_jobs=-1,
         )
-        scores = cross_val_score(
-            tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1,
-        )
-        mean_score = scores.mean()
-        is_best = mean_score > best_score
+        tmp_clf.fit(X_train, y_train, verbose=False)
+        eval_proba = tmp_clf.predict_proba(X_eval)[:, 1]
+        auroc = roc_auc_score(y_eval, eval_proba)
+        eval_preds = tmp_clf.predict(X_eval)
+        trial_f1 = f1_score(y_eval, eval_preds, average="weighted", zero_division=0)
+        is_best = auroc > best_score
         if is_best:
-            best_score = mean_score
+            best_score = auroc
             best_params = params
-        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={mean_score:.4f}  "
+        results.append({**params, "auroc": auroc, "f1": trial_f1})
+        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={auroc:.4f}  F1={trial_f1:.4f}  "
                    f"depth={params.get('max_depth')}  lr={params.get('learning_rate')}  "
                    f"n_est={params.get('n_estimators')}  sub={params.get('subsample')}  "
                    f"col={params.get('colsample_bytree')}  mcw={params.get('min_child_weight')}  "
@@ -171,6 +175,11 @@ def tune_xgboost(
 
     print(f"  Best AUROC: {best_score:.4f}")
     print(f"  Best params: {best_params}")
+
+    results_df = pd.DataFrame(results).sort_values("auroc", ascending=False)
+    print(f"\n  Top 5 configs:")
+    print(results_df.head().to_string(index=False))
+
     return dict(best_params)
 
 
@@ -261,9 +270,11 @@ def tune_logsumexp(
 def tune_catboost(
     X_train: np.ndarray,
     y_train: np.ndarray,
+    X_eval: np.ndarray,
+    y_eval: np.ndarray,
     args: argparse.Namespace,
 ) -> Dict:
-    """Random search over CatBoost hyperparameters, return best config."""
+    """Random search over CatBoost hyperparameters, evaluated on inference set."""
     if not _HAS_CATBOOST:
         raise ImportError("catboost is required for tuning. Install with: pip install catboost")
 
@@ -276,36 +287,33 @@ def tune_catboost(
         "rsm": [0.7, 0.8, 1.0],
     }
 
-    print(f"\nCatBoost hyperparameter tuning ({args.tune_iter} iterations, 5-fold CV) ...")
+    print(f"\nCatBoost hyperparameter tuning ({args.tune_iter} iterations, inference-set eval) ...")
 
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
     param_list = list(ParameterSampler(
         param_distributions, n_iter=args.tune_iter, random_state=args.seed,
     ))
     best_score, best_params = -1, None
+    results = []
 
     for i, params in enumerate(tqdm(param_list, desc="Tuning CatBoost"), 1):
-        scores = []
-        for tr_idx, va_idx in cv.split(X_train, y_train):
-            X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-            y_tr, y_va = y_train[tr_idx], y_train[va_idx]
-            tmp_clf = CatBoostClassifier(
-                **params,
-                loss_function="Logloss",
-                eval_metric="AUC",
-                random_seed=args.seed,
-                verbose=0,
-                early_stopping_rounds=50,
-            )
-            tmp_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
-            va_proba = tmp_clf.predict_proba(X_va)[:, 1]
-            scores.append(roc_auc_score(y_va, va_proba))
-        mean_score = np.mean(scores)
-        is_best = mean_score > best_score
+        tmp_clf = CatBoostClassifier(
+            **params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=args.seed,
+            verbose=0,
+        )
+        tmp_clf.fit(X_train, y_train, verbose=False)
+        eval_proba = tmp_clf.predict_proba(X_eval)[:, 1]
+        auroc = roc_auc_score(y_eval, eval_proba)
+        eval_preds = tmp_clf.predict(X_eval).astype(int).ravel()
+        trial_f1 = f1_score(y_eval, eval_preds, average="weighted", zero_division=0)
+        is_best = auroc > best_score
         if is_best:
-            best_score = mean_score
+            best_score = auroc
             best_params = params
-        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={mean_score:.4f}  "
+        results.append({**params, "auroc": auroc, "f1": trial_f1})
+        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={auroc:.4f}  F1={trial_f1:.4f}  "
                    f"depth={params.get('depth')}  lr={params.get('learning_rate')}  "
                    f"iter={params.get('iterations')}  sub={params.get('subsample')}  "
                    f"rsm={params.get('rsm')}  l2={params.get('l2_leaf_reg')}"
@@ -313,4 +321,9 @@ def tune_catboost(
 
     print(f"  Best AUROC: {best_score:.4f}")
     print(f"  Best params: {best_params}")
+
+    results_df = pd.DataFrame(results).sort_values("auroc", ascending=False)
+    print(f"\n  Top 5 configs:")
+    print(results_df.head().to_string(index=False))
+
     return dict(best_params)
