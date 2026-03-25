@@ -153,7 +153,6 @@ class TripleCheckModule(pl.LightningModule):
         losses = []
         delta_norms = []
         feat_norms = []
-        delta_cos_sims = []
         for j in range(len(compound_indices)):
             base = j * 4
             feat_t1 = all_feats[base].unsqueeze(0)
@@ -172,11 +171,6 @@ class TripleCheckModule(pl.LightningModule):
             feat_norms.append(feat_t2.float().norm().item())
             feat_norms.append(feat_u2.float().norm().item())
 
-            # Cosine similarity between delta pairs
-            d1_norm = torch.nn.functional.normalize(delta1, dim=-1)
-            d2_norm = torch.nn.functional.normalize(delta2, dim=-1)
-            delta_cos_sims.append((d1_norm * d2_norm).sum().item())
-
         loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
@@ -192,8 +186,6 @@ class TripleCheckModule(pl.LightningModule):
             cos_sim = (normed @ normed.T).fill_diagonal_(0)
             n = cos_sim.shape[0]
             self.log("diag/cos_sim_mean", cos_sim.sum().item() / (n * (n - 1)),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
-            self.log("diag/delta_cos_sim_mean", sum(delta_cos_sims) / len(delta_cos_sims),
                      on_step=True, on_epoch=False, rank_zero_only=True)
 
         return loss

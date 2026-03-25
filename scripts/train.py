@@ -134,6 +134,11 @@ def parse_args():
         help="Number of warmup steps (overrides config)"
     )
     parser.add_argument(
+        "--warmup_epochs",
+        type=float,
+        help="Number of warmup epochs (overrides --warmup_steps when specified)"
+    )
+    parser.add_argument(
         "--max_samples",
         type=int,
         default=4,
@@ -472,7 +477,11 @@ def main():
     num_epochs = config["training"]["num_epochs"]
     accum = config["training"].get("gradient_accumulation_steps", 1)
     total_steps = (steps_per_epoch // accum) * num_epochs
-    warmup_steps = config["training"].get("warmup_steps", 100)
+    if args.warmup_epochs is not None:
+        warmup_steps = int((steps_per_epoch // accum) * args.warmup_epochs)
+        logger.info(f"Warmup epochs={args.warmup_epochs} -> warmup_steps={warmup_steps}")
+    else:
+        warmup_steps = config["training"].get("warmup_steps", 100)
 
     module = TripleCheckModule(
         model=model,
