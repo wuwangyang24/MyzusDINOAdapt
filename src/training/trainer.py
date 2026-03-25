@@ -120,7 +120,7 @@ class TripleCheckModule(pl.LightningModule):
                 groups.append(imgs)
         return groups  # [treated_p1, control_p1, treated_p2, control_p2]
 
-    def _shared_step(self, batch):
+    def _shared_step(self, batch, batch_idx=None):
         """Process a batch of compounds from CompoundPlateDataset.
 
         Accepts either a single compound dict (batch_size=1 with default
@@ -173,8 +173,13 @@ class TripleCheckModule(pl.LightningModule):
 
         loss = torch.stack(losses).mean()
 
-        # Log diagnostics every 50 steps (including step 0), training only
-        if self.training and self.global_step % 50 == 0:
+        # Log diagnostics every 50 optimizer steps, training only.
+        # With gradient accumulation, _shared_step is called per micro-batch
+        # but global_step stays constant across the accumulation window.
+        # Use batch_idx to fire only on the first micro-batch of each window.
+        accum = self.trainer.accumulate_grad_batches if self.trainer else 1
+        is_first_microbatch = (batch_idx is None) or (batch_idx % accum == 0)
+        if self.training and is_first_microbatch and self.global_step % 50 == 0:
             all_feat_tensor = torch.stack([f.float() for f in all_feats])
             self.log("diag/feat_norm_mean", sum(feat_norms) / len(feat_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
@@ -196,7 +201,7 @@ class TripleCheckModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     def training_step(self, batch, batch_idx):
-        loss = self._shared_step(batch)
+        loss = self._shared_step(batch, batch_idx)
         if loss is None:
             return None
         if torch.isnan(loss) or torch.isinf(loss):
@@ -222,7 +227,7 @@ class TripleCheckModule(pl.LightningModule):
         self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True, rank_zero_only=True)
 
     def validation_step(self, batch, batch_idx):
-        loss = self._shared_step(batch)
+        loss = self._shared_step(batch, batch_idx)
         if loss is None:
             return None
         bs = len(batch) if isinstance(batch, list) else 1
