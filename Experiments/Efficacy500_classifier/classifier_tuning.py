@@ -144,7 +144,7 @@ def tune_xgboost(
     ))
     best_score, best_params = -1, None
 
-    for params in tqdm(param_list, desc="Tuning XGBoost"):
+    for i, params in enumerate(tqdm(param_list, desc="Tuning XGBoost"), 1):
         tmp_clf = xgb.XGBClassifier(
             **params,
             objective="binary:logistic",
@@ -157,9 +157,17 @@ def tune_xgboost(
             tmp_clf, X_train, y_train, cv=cv, scoring="roc_auc", n_jobs=-1,
         )
         mean_score = scores.mean()
-        if mean_score > best_score:
+        is_best = mean_score > best_score
+        if is_best:
             best_score = mean_score
             best_params = params
+        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={mean_score:.4f}  "
+                   f"depth={params.get('max_depth')}  lr={params.get('learning_rate')}  "
+                   f"n_est={params.get('n_estimators')}  sub={params.get('subsample')}  "
+                   f"col={params.get('colsample_bytree')}  mcw={params.get('min_child_weight')}  "
+                   f"gamma={params.get('gamma')}  alpha={params.get('reg_alpha')}  "
+                   f"lambda={params.get('reg_lambda')}"
+                   f"{'  ★ BEST' if is_best else ''}")
 
     print(f"  Best AUROC: {best_score:.4f}")
     print(f"  Best params: {best_params}")
@@ -276,7 +284,7 @@ def tune_catboost(
     ))
     best_score, best_params = -1, None
 
-    for params in tqdm(param_list, desc="Tuning CatBoost"):
+    for i, params in enumerate(tqdm(param_list, desc="Tuning CatBoost"), 1):
         scores = []
         for tr_idx, va_idx in cv.split(X_train, y_train):
             X_tr, X_va = X_train[tr_idx], X_train[va_idx]
@@ -293,9 +301,15 @@ def tune_catboost(
             va_proba = tmp_clf.predict_proba(X_va)[:, 1]
             scores.append(roc_auc_score(y_va, va_proba))
         mean_score = np.mean(scores)
-        if mean_score > best_score:
+        is_best = mean_score > best_score
+        if is_best:
             best_score = mean_score
             best_params = params
+        tqdm.write(f"  [{i}/{len(param_list)}] AUROC={mean_score:.4f}  "
+                   f"depth={params.get('depth')}  lr={params.get('learning_rate')}  "
+                   f"iter={params.get('iterations')}  sub={params.get('subsample')}  "
+                   f"rsm={params.get('rsm')}  l2={params.get('l2_leaf_reg')}"
+                   f"{'  ★ BEST' if is_best else ''}")
 
     print(f"  Best AUROC: {best_score:.4f}")
     print(f"  Best params: {best_params}")
