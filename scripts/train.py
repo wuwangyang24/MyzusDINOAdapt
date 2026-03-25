@@ -105,11 +105,6 @@ def parse_args():
         help="Distance metric for triple-check loss"
     )
     parser.add_argument(
-        "--num-untreated-samples",
-        type=int,
-        help="Number of untreated samples to average per pair (default: 1)"
-    )
-    parser.add_argument(
         "--device",
         type=str,
         choices=["cuda", "cpu"],
@@ -259,8 +254,6 @@ def main():
         config["training"]["batch_size"] = args.batch_size
     if args.learning_rate:
         config["training"]["learning_rate"] = args.learning_rate
-    if args.num_untreated_samples:
-        config["data"]["num_untreated_samples"] = args.num_untreated_samples
     if args.device:
         config["device"] = args.device
     if args.warmup_steps:
@@ -274,9 +267,6 @@ def main():
     if args.train_layernorm:
         config["lora"]["train_layernorm"] = True
         config["dora"]["train_layernorm"] = True
-
-    # Set default num_untreated_samples if not specified
-    config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
 
     # Setup logger
     logger = setup_logger(

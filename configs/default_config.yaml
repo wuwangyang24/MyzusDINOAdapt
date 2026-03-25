@@ -41,7 +41,6 @@ data:
   train_dir: "data/train"
   val_dir: "data/val"
   image_size: 224
-  num_untreated_samples: 1  # Number of untreated samples to average per pair (for triple-check)
 
 # Optimizer configuration
 optimizer:
