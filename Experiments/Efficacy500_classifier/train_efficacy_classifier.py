@@ -208,7 +208,7 @@ def parse_args() -> argparse.Namespace:
 
     # ── XGBoost hyper-parameters ──
     p.add_argument("--xgb_n_estimators", type=int, default=2000, help="XGBoost rounds (default: 2000)")
-    p.add_argument("--xgb_max_depth", type=int, default=20, help="XGBoost max depth (default: 20)")
+    p.add_argument("--xgb_max_depth", type=int, default=2, help="XGBoost max depth (default: 2)")
     p.add_argument("--xgb_learning_rate", type=float, default=0.01, help="XGBoost lr (default: 0.01)")
     p.add_argument("--xgb_subsample", type=float, default=0.8, help="XGBoost row subsample (default: 0.8)")
     p.add_argument("--xgb_colsample_bytree", type=float, default=0.7, help="XGBoost col subsample (default: 0.7)")
