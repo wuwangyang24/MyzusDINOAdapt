@@ -14,6 +14,7 @@ class DoRAConfig:
     dora_alpha: float = 16.0  # Scaling factor
     dora_dropout: float = 0.1  # Dropout rate for DoRA layers
     bias: str = "none"  # Bias handling: "none", "all", "dora_only"
+    train_layernorm: bool = False  # Unfreeze LayerNorm parameters during training
 
 
 class DoRALinear(nn.Module):

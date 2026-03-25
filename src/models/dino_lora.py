@@ -89,6 +89,13 @@ class DINOWithLoRA(nn.Module):
         # Replace linear layers with LoRA layers in attention blocks
         self._replace_attention_layers()
         self._replace_mlp_layers()
+        
+        # Optionally unfreeze LayerNorm parameters
+        if self.lora_config.train_layernorm:
+            for module in self.backbone.modules():
+                if isinstance(module, nn.LayerNorm):
+                    for param in module.parameters():
+                        param.requires_grad = True
     
     def _replace_attention_layers(self) -> None:
         """Replace attention projection layers with LoRA."""

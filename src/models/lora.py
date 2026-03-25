@@ -14,6 +14,7 @@ class LoRAConfig:
     lora_alpha: float = 16.0  # Scaling factor
     lora_dropout: float = 0.1  # Dropout rate for LoRA layers
     bias: str = "none"  # Bias handling: "none", "all", "lora_only"
+    train_layernorm: bool = False  # Unfreeze LayerNorm parameters during training
 
 
 class LoRALinear(nn.Module):

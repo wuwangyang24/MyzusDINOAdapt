@@ -256,9 +256,11 @@ def load_model(
     lora_r: int = 8,
     lora_alpha: float = 16.0,
     lora_dropout: float = 0.1,
+    lora_train_layernorm: bool = False,
     dora_r: int = 8,
     dora_alpha: float = 16.0,
     dora_dropout: float = 0.1,
+    dora_train_layernorm: bool = False,
     vae_checkpoint: Optional[str] = None,
     vae_latent_dim: int = 100,
 ) -> nn.Module:
@@ -310,6 +312,7 @@ def load_model(
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
+            train_layernorm=lora_train_layernorm,
         )
         model = DINOWithLoRA(
             lora_config=lora_cfg,
@@ -323,6 +326,7 @@ def load_model(
             r=dora_r,
             dora_alpha=dora_alpha,
             dora_dropout=dora_dropout,
+            train_layernorm=dora_train_layernorm,
         )
         model = DINOWithDoRA(
             dora_config=dora_cfg,
@@ -559,12 +563,14 @@ def parse_args() -> argparse.Namespace:
     lora_grp.add_argument("--lora_r",       type=int,   default=8,    help="LoRA rank. Default: 8")
     lora_grp.add_argument("--lora_alpha",   type=float, default=16.0, help="LoRA alpha. Default: 16.0")
     lora_grp.add_argument("--lora_dropout", type=float, default=0.1,  help="LoRA dropout. Default: 0.1")
+    lora_grp.add_argument("--lora_train_layernorm", action="store_true", help="Unfreeze LayerNorm params in LoRA model")
 
     # ---- DoRA hyper-parameters ----
     dora_grp = parser.add_argument_group("DoRA (used when --model_type dino_dora)")
     dora_grp.add_argument("--dora_r",       type=int,   default=8,    help="DoRA rank. Default: 8")
     dora_grp.add_argument("--dora_alpha",   type=float, default=16.0, help="DoRA alpha. Default: 16.0")
     dora_grp.add_argument("--dora_dropout", type=float, default=0.1,  help="DoRA dropout. Default: 0.1")
+    dora_grp.add_argument("--dora_train_layernorm", action="store_true", help="Unfreeze LayerNorm params in DoRA model")
 
     # ---- Custom VAE hyper-parameters ----
     vae_grp = parser.add_argument_group("VAE (used when --model_type custom_vae)")
@@ -654,9 +660,11 @@ def main() -> None:
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
+        lora_train_layernorm=getattr(args, 'lora_train_layernorm', False),
         dora_r=args.dora_r,
         dora_alpha=args.dora_alpha,
         dora_dropout=args.dora_dropout,
+        dora_train_layernorm=getattr(args, 'dora_train_layernorm', False),
         vae_checkpoint=args.vae_checkpoint,
         vae_latent_dim=args.vae_latent_dim,
     )
@@ -704,8 +712,12 @@ def main() -> None:
         model_tag = f"{args.backbone}_{args.model_type}"
         if args.model_type == "dino_lora":
             model_tag += f"_r{args.lora_r}a{args.lora_alpha}"
+            if getattr(args, 'lora_train_layernorm', False):
+                model_tag += "_LN"
         elif args.model_type == "dino_dora":
             model_tag += f"_r{args.dora_r}a{args.dora_alpha}"
+            if getattr(args, 'dora_train_layernorm', False):
+                model_tag += "_LN"
         if args.return_reg_tokens:
             model_tag += "_reg"
     if args.name_suffix:

@@ -84,6 +84,7 @@ def main():
             r=config["lora"]["r"],
             lora_alpha=config["lora"]["lora_alpha"],
             lora_dropout=config["lora"]["lora_dropout"],
+            train_layernorm=config["lora"].get("train_layernorm", False),
         )
         
         model = DINOWithLoRA(
@@ -99,6 +100,7 @@ def main():
             r=config["dora"]["r"],
             dora_alpha=config["dora"]["dora_alpha"],
             dora_dropout=config["dora"]["dora_dropout"],
+            train_layernorm=config["dora"].get("train_layernorm", False),
         )
         
         model = DINOWithDoRA(
