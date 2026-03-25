@@ -173,8 +173,8 @@ class TripleCheckModule(pl.LightningModule):
 
         loss = torch.stack(losses).mean()
 
-        # Log diagnostics every 50 steps (including step 0)
-        if self.global_step % 50 == 0:
+        # Log diagnostics every 50 steps (including step 0), training only
+        if self.training and self.global_step % 50 == 0:
             all_feat_tensor = torch.stack([f.float() for f in all_feats])
             self.log("diag/feat_norm_mean", sum(feat_norms) / len(feat_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
