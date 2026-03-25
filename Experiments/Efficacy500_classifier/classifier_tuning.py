@@ -125,8 +125,8 @@ def tune_xgboost(
         raise ImportError("xgboost is required for tuning. Install with: pip install xgboost")
 
     param_distributions = {
-        "n_estimators": [500, 1000, 2000],
-        "max_depth": [5, 10, 20],
+        "n_estimators": [1000, 3000, 5000],
+        "max_depth": [2, 4, 6, 8],
         "learning_rate": [0.01, 0.05, 0.1],
         "subsample": [0.7, 0.8, 1.0],
         "colsample_bytree": [0.7, 0.8, 1.0],
