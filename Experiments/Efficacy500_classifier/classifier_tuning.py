@@ -33,6 +33,8 @@ try:
 except ImportError:
     from classifier_utils import GatedABMIL, train_abmil, infer_abmil, LogSumExpMIL, train_logsumexp, infer_logsumexp
 
+_USE_GPU = torch.cuda.is_available()
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1.  ABMIL tuning
@@ -153,7 +155,7 @@ def tune_xgboost(
             eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
-            n_jobs=-1,
+            device="cuda" if _USE_GPU else "cpu",
         )
         tmp_clf.fit(X_train, y_train, verbose=False)
         eval_proba = tmp_clf.predict_proba(X_eval)[:, 1]
@@ -302,6 +304,7 @@ def tune_catboost(
             eval_metric="AUC",
             random_seed=args.seed,
             verbose=0,
+            task_type="GPU" if _USE_GPU else "CPU",
         )
         tmp_clf.fit(X_train, y_train, verbose=False)
         eval_proba = tmp_clf.predict_proba(X_eval)[:, 1]

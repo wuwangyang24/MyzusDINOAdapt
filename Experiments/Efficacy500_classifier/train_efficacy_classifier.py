@@ -437,7 +437,7 @@ def _run_xgboost(
             eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
-            n_jobs=-1,
+            device="cuda" if torch.cuda.is_available() else "cpu",
             early_stopping_rounds=args.xgb_early_stopping,
         )
         fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
@@ -459,7 +459,7 @@ def _run_xgboost(
         objective="binary:logistic",
         use_label_encoder=False,
         random_state=args.seed,
-        n_jobs=-1,
+        device="cuda" if torch.cuda.is_available() else "cpu",
         early_stopping_rounds=args.xgb_early_stopping,
     )
     print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
@@ -547,6 +547,7 @@ def _run_catboost(
             eval_metric="AUC",
             random_seed=args.seed,
             verbose=0,
+            task_type="GPU" if torch.cuda.is_available() else "CPU",
             early_stopping_rounds=args.cb_early_stopping,
         )
         fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
@@ -569,6 +570,7 @@ def _run_catboost(
         eval_metric="AUC",
         random_seed=args.seed,
         verbose=500,
+        task_type="GPU" if torch.cuda.is_available() else "CPU",
         early_stopping_rounds=args.cb_early_stopping,
     )
     print(f"\nTraining final CatBoost on all {X_train.shape[0]} training compounds ...")
