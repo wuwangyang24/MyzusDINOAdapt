@@ -307,6 +307,13 @@ def _run_logsumexp(
         print(f"\n  Final LogSumExp config: hidden={args.lse_hidden}  dropout={args.lse_dropout}  "
               f"lr={args.lse_lr}  wd={args.lse_wd}  init_r={args.lse_init_r}  "
               f"instance_dropout={args.lse_instance_dropout}")
+        params_path = output_dir / "best_tuning_params.txt"
+        with open(params_path, "w") as f:
+            f.write("LogSumExp best hyperparameters\n")
+            f.write("=" * 40 + "\n")
+            for k, v in best_params.items():
+                f.write(f"{k}: {v}\n")
+        print(f"  Saved best params to {params_path}")
 
     model = train_logsumexp(
         train_bags, train_labels, args, device,
@@ -352,6 +359,13 @@ def _run_abmil(
             setattr(args, f"abmil_{k}", v)
         print(f"\n  Final ABMIL config: hidden={args.abmil_hidden}  dropout={args.abmil_dropout}  "
               f"lr={args.abmil_lr}  wd={args.abmil_wd}  instance_dropout={args.abmil_instance_dropout}")
+        params_path = output_dir / "best_tuning_params.txt"
+        with open(params_path, "w") as f:
+            f.write("ABMIL best hyperparameters\n")
+            f.write("=" * 40 + "\n")
+            for k, v in best_params.items():
+                f.write(f"{k}: {v}\n")
+        print(f"  Saved best params to {params_path}")
 
     model = train_abmil(
         train_bags, train_labels, args, device,
@@ -368,6 +382,7 @@ def _run_xgboost(
     inf_embeddings: Dict,
     inf_cid2label: Dict[str, int],
     args: argparse.Namespace,
+    output_dir: Path | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
     """Train XGBoost, run inference, return (preds, proba, y_true, cids, label)."""
     # ── Build training features ──────────────────────────────────────────
@@ -421,6 +436,13 @@ def _run_xgboost(
     # ── Optional hyperparameter tuning ───────────────────────────────────
     if args.tune:
         xgb_params = tune_xgboost(X_train, y_train, X_inf, y_inf, args)
+        params_path = output_dir / "best_tuning_params.txt"
+        with open(params_path, "w") as f:
+            f.write("XGBoost best hyperparameters\n")
+            f.write("=" * 40 + "\n")
+            for k, v in xgb_params.items():
+                f.write(f"{k}: {v}\n")
+        print(f"  Saved best params to {params_path}")
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
@@ -477,6 +499,7 @@ def _run_catboost(
     inf_embeddings: Dict,
     inf_cid2label: Dict[str, int],
     args: argparse.Namespace,
+    output_dir: Path | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], str]:
     """Train CatBoost, run inference, return (preds, proba, y_true, cids, label)."""
     # ── Build training features ──────────────────────────────────────────
@@ -531,6 +554,13 @@ def _run_catboost(
     # ── Optional hyperparameter tuning ───────────────────────────────────
     if args.tune:
         cb_params = tune_catboost(X_train, y_train, X_inf, y_inf, args)
+        params_path = output_dir / "best_tuning_params.txt"
+        with open(params_path, "w") as f:
+            f.write("CatBoost best hyperparameters\n")
+            f.write("=" * 40 + "\n")
+            for k, v in cb_params.items():
+                f.write(f"{k}: {v}\n")
+        print(f"  Saved best params to {params_path}")
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
@@ -642,10 +672,12 @@ def main() -> None:
     elif args.classifier == "catboost":
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_catboost(
             embeddings, cid2label, inf_embeddings, inf_cid2label, args,
+            output_dir=output_dir,
         )
     else:
         inf_preds, inf_proba, y_inf, cids_inf, classifier_label = _run_xgboost(
             embeddings, cid2label, inf_embeddings, inf_cid2label, args,
+            output_dir=output_dir,
         )
 
     # ── Evaluate & save ──────────────────────────────────────────────────
