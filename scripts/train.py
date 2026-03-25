@@ -467,9 +467,11 @@ def main():
         reduction="mean",
     )
     # Compute step counts for LR scheduler
+    # global_step increments per optimizer step, so divide by accumulation factor
     steps_per_epoch = len(train_dataloader)
     num_epochs = config["training"]["num_epochs"]
-    total_steps = steps_per_epoch * num_epochs
+    accum = config["training"].get("gradient_accumulation_steps", 1)
+    total_steps = (steps_per_epoch // accum) * num_epochs
     warmup_steps = config["training"].get("warmup_steps", 100)
 
     module = TripleCheckModule(
@@ -550,10 +552,6 @@ def main():
             notes=wandb_cfg.get("notes", ""),
             config=wandb_config,
         )
-        # Use trainer/global_step as x-axis for all metrics so the
-        # step counter is monotonically increasing in W&B charts.
-        wandb_logger.experiment.define_metric("trainer/global_step")
-        wandb_logger.experiment.define_metric("*", step_metric="trainer/global_step")
         pl_loggers.append(wandb_logger)
 
     # --- Accelerator / devices / strategy ---
