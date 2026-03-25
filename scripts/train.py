@@ -185,6 +185,11 @@ def parse_args():
         help="LoRA/DoRA alpha scaling factor (overrides config)"
     )
     parser.add_argument(
+        "--train-layernorm",
+        action="store_true",
+        help="Unfreeze LayerNorm parameters during LoRA/DoRA training (overrides config)"
+    )
+    parser.add_argument(
         "--random_sampler",
         action="store_true",
         help="Sample compounds with replacement (allows overlap across batches)"
@@ -266,6 +271,9 @@ def main():
     if args.lora_alpha is not None:
         config["lora"]["lora_alpha"] = args.lora_alpha
         config["dora"]["dora_alpha"] = args.lora_alpha
+    if args.train_layernorm:
+        config["lora"]["train_layernorm"] = True
+        config["dora"]["train_layernorm"] = True
 
     # Set default num_untreated_samples if not specified
     config.setdefault("data", {}).setdefault("num_untreated_samples", 1)
