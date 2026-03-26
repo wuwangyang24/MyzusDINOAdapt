@@ -62,9 +62,11 @@ class TripleCheckLoss(nn.Module):
         Returns:
             Loss value (scalar if reduction != "none")
         """
-        # Compute deltas
-        delta_1 = features_t1 - features_u1  # Δ₁ = z_T1 - z_U1
-        delta_2 = features_t2 - features_u2  # Δ₂ = z_T2 - z_U2
+        # Compute deltas: subtract mean of untreated, then average across samples
+        mean_u1 = features_u1.mean(dim=0)  # Mean untreated embedding from Bioassay 1
+        mean_u2 = features_u2.mean(dim=0)  # Mean untreated embedding from Bioassay 2
+        delta_1 = (features_t1 - mean_u1).mean(dim=0, keepdim=True)  # Δ₁ = mean(z_T1 - mean(z_U1))
+        delta_2 = (features_t2 - mean_u2).mean(dim=0, keepdim=True)  # Δ₂ = mean(z_T2 - mean(z_U2))
         
         # Compute distance between deltas
         if self.distance_metric == "l2":
