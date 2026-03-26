@@ -72,7 +72,7 @@ class TripleCheckModule(pl.LightningModule):
             chunk_size: Max images per backbone forward pass.
 
         Returns:
-            List of ``(D,)`` tensors — mean feature per group.
+            List of ``(N_i, D)`` tensors — per-image features for each group.
         """
         sizes = [t.shape[0] for t in all_images]
         big_batch = torch.cat(all_images, dim=0)        # (sum(N_i), C, H, W)
@@ -90,7 +90,7 @@ class TripleCheckModule(pl.LightningModule):
         results = []
         offset = 0
         for n in sizes:
-            results.append(all_feats[offset : offset + n].mean(dim=0))  # (D,)
+            results.append(all_feats[offset : offset + n])  # (N_i, D)
             offset += n
         return results
 
@@ -156,40 +156,54 @@ class TripleCheckModule(pl.LightningModule):
         feat_norms_control = []
         for j in range(len(compound_indices)):
             base = j * 4
-            feat_t1 = all_feats[base].unsqueeze(0)
-            feat_u1 = all_feats[base + 1].unsqueeze(0)
-            feat_t2 = all_feats[base + 2].unsqueeze(0)
-            feat_u2 = all_feats[base + 3].unsqueeze(0)
+            feat_t1 = all_feats[base]      # (N, D)
+            feat_u1 = all_feats[base + 1]  # (N, D)
+            feat_t2 = all_feats[base + 2]  # (N, D)
+            feat_u2 = all_feats[base + 3]  # (N, D)
             losses.append(self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2))
 
-            # Diagnostics: delta and feature norms
-            delta1 = (feat_t1 - feat_u1).float()
-            delta2 = (feat_t2 - feat_u2).float()
+            # Diagnostics: delta and feature norms (use means for logging)
+            mean_t1 = feat_t1.float().mean(dim=0)
+            mean_u1 = feat_u1.float().mean(dim=0)
+            mean_t2 = feat_t2.float().mean(dim=0)
+            mean_u2 = feat_u2.float().mean(dim=0)
+            delta1 = (feat_t1.float() - mean_u1).mean(dim=0)
+            delta2 = (feat_t2.float() - mean_u2).mean(dim=0)
             delta_norms.append(delta1.norm().item())
             delta_norms.append(delta2.norm().item())
-            feat_norms_treated.append(feat_t1.float().norm().item())
-            feat_norms_control.append(feat_u1.float().norm().item())
-            feat_norms_treated.append(feat_t2.float().norm().item())
-            feat_norms_control.append(feat_u2.float().norm().item())
+            feat_norms_treated.append(mean_t1.norm().item())
+            feat_norms_control.append(mean_u1.norm().item())
+            feat_norms_treated.append(mean_t2.norm().item())
+            feat_norms_control.append(mean_u2.norm().item())
 
         loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
         if self.training:
-            all_feat_tensor = torch.stack([f.float() for f in all_feats])
+            all_feat_tensor = torch.cat([f.float() for f in all_feats], dim=0)  # (total_images, D)
             self.log("diag/feat_norm_treated_mean", sum(feat_norms_treated) / len(feat_norms_treated),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/feat_norm_control_mean", sum(feat_norms_control) / len(feat_norms_control),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
-            treated_feats = torch.stack([all_feats[j * 4].float() for j in range(len(compound_indices))]
-                                        + [all_feats[j * 4 + 2].float() for j in range(len(compound_indices))])
-            control_feats = torch.stack([all_feats[j * 4 + 1].float() for j in range(len(compound_indices))]
-                                        + [all_feats[j * 4 + 3].float() for j in range(len(compound_indices))])
+            treated_feats = torch.cat([all_feats[j * 4].float() for j in range(len(compound_indices))]
+                                      + [all_feats[j * 4 + 2].float() for j in range(len(compound_indices))], dim=0)
+            control_feats = torch.cat([all_feats[j * 4 + 1].float() for j in range(len(compound_indices))]
+                                      + [all_feats[j * 4 + 3].float() for j in range(len(compound_indices))], dim=0)
             self.log("diag/feat_std_treated", treated_feats.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/feat_std_control", control_feats.std(dim=0).mean().item(),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            # Per-plate: treated - mean(control) from same plate
+            delta_per_plate = []
+            for j in range(len(compound_indices)):
+                for offset in [0, 2]:  # plate 1 (offset 0), plate 2 (offset 2)
+                    t = all_feats[j * 4 + offset].float()       # (N, D)
+                    u = all_feats[j * 4 + offset + 1].float()   # (N, D)
+                    delta_per_plate.append(t - u.mean(dim=0, keepdim=True))
+            delta_per_plate = torch.cat(delta_per_plate, dim=0)
+            self.log("diag/feat_std_treated_minus_ctrl", delta_per_plate.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
             cos_sim = (normed @ normed.T).fill_diagonal_(0)
