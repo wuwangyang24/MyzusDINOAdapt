@@ -183,7 +183,13 @@ class TripleCheckModule(pl.LightningModule):
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
-            self.log("diag/feat_std", all_feat_tensor.std(dim=0).mean().item(),
+            treated_feats = torch.stack([all_feats[j * 4].float() for j in range(len(compound_indices))]
+                                        + [all_feats[j * 4 + 2].float() for j in range(len(compound_indices))])
+            control_feats = torch.stack([all_feats[j * 4 + 1].float() for j in range(len(compound_indices))]
+                                        + [all_feats[j * 4 + 3].float() for j in range(len(compound_indices))])
+            self.log("diag/feat_std_treated", treated_feats.std(dim=0).mean().item(),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/feat_std_control", control_feats.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
             cos_sim = (normed @ normed.T).fill_diagonal_(0)
