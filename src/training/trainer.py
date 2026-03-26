@@ -152,7 +152,8 @@ class TripleCheckModule(pl.LightningModule):
         # Compute per-compound losses
         losses = []
         delta_norms = []
-        feat_norms = []
+        feat_norms_treated = []
+        feat_norms_control = []
         for j in range(len(compound_indices)):
             base = j * 4
             feat_t1 = all_feats[base].unsqueeze(0)
@@ -166,17 +167,19 @@ class TripleCheckModule(pl.LightningModule):
             delta2 = (feat_t2 - feat_u2).float()
             delta_norms.append(delta1.norm().item())
             delta_norms.append(delta2.norm().item())
-            feat_norms.append(feat_t1.float().norm().item())
-            feat_norms.append(feat_u1.float().norm().item())
-            feat_norms.append(feat_t2.float().norm().item())
-            feat_norms.append(feat_u2.float().norm().item())
+            feat_norms_treated.append(feat_t1.float().norm().item())
+            feat_norms_control.append(feat_u1.float().norm().item())
+            feat_norms_treated.append(feat_t2.float().norm().item())
+            feat_norms_control.append(feat_u2.float().norm().item())
 
         loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
         if self.training:
             all_feat_tensor = torch.stack([f.float() for f in all_feats])
-            self.log("diag/feat_norm_mean", sum(feat_norms) / len(feat_norms),
+            self.log("diag/feat_norm_treated_mean", sum(feat_norms_treated) / len(feat_norms_treated),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+            self.log("diag/feat_norm_control_mean", sum(feat_norms_control) / len(feat_norms_control),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
