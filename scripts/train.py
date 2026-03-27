@@ -194,6 +194,14 @@ def parse_args():
         action="store_true",
         help="Sample compounds with replacement (allows overlap across batches)"
     )
+    parser.add_argument(
+        "--control-embeddings",
+        type=str,
+        default=None,
+        help="Path to pre-computed control embeddings .pt file. "
+             "When set, control features are loaded from this file "
+             "instead of being encoded by the backbone during training.",
+    )
 
     # ── Efficacy classifier validation ──
     parser.add_argument(
@@ -341,6 +349,15 @@ def main():
     # since metadata paths already include the subdirectory
     image_root_dir = args.data_root_dir if args.data_root_dir else args.data_dir
 
+    # Load pre-computed control embeddings if specified
+    control_embeddings = None
+    if args.control_embeddings:
+        control_emb_path = Path(args.control_embeddings)
+        if not control_emb_path.exists():
+            raise FileNotFoundError(f"Control embeddings file not found: {control_emb_path}")
+        control_embeddings = torch.load(control_emb_path, map_location="cpu", weights_only=False)
+        logger.info(f"Loaded pre-computed control embeddings from: {control_emb_path}")
+
     # Create datasets
     logger.info(f"Loading paired bioassay data from: {args.data_dir}")
     transform = get_default_transforms(
@@ -386,6 +403,7 @@ def main():
         compounds_list=train_compounds,
         num_plates=2,
         max_samples=args.max_samples,
+        control_embeddings=control_embeddings,
     )
     num_workers = args.num_workers if args.num_workers is not None else config["training"]["num_workers"]
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
@@ -431,6 +449,7 @@ def main():
             compounds_list=val_compounds,
             num_plates=2,
             max_samples=args.max_samples,
+            control_embeddings=control_embeddings,
         )
         val_dataloader = DataLoader(
             val_dataset,
@@ -453,6 +472,7 @@ def main():
             transform=val_transform,
             num_plates=2,
             max_samples=args.max_samples,
+            control_embeddings=control_embeddings,
         )
         val_dataloader = DataLoader(
             val_dataset,

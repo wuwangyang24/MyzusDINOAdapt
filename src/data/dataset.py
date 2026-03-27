@@ -75,6 +75,7 @@ class CompoundPlateDataset(Dataset):
         compounds_list: Optional[List] = None,
         num_plates: int = 0,
         max_samples: int = 0,
+        control_embeddings: Optional[Dict] = None,
     ):
         """
         Initialize compound-plate dataset.
@@ -86,12 +87,17 @@ class CompoundPlateDataset(Dataset):
             compounds_list: Pre-split list of compound entries (skips loading metadata if provided)
             num_plates: If >0, randomly sample this many plates per compound in __getitem__
             max_samples: If >0, randomly sample at most this many images per plate/type
+            control_embeddings: Optional pre-computed control embeddings dict loaded from a .pt
+                file. Structure: {compound_id: {plate_id: {"control": Tensor(D,)}}}.
+                When provided, control features are looked up from this dict instead of
+                loading and transforming control images.
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
         self.metadata_path = Path(metadata_file)
         self.num_plates = num_plates
         self.max_samples = max_samples
+        self.control_embeddings = control_embeddings
         
         if compounds_list is not None:
             self.compounds = compounds_list
@@ -182,7 +188,20 @@ class CompoundPlateDataset(Dataset):
             for sample_type in ["treated", "control"]:
                 if sample_type not in plate_data:
                     continue
-                
+
+                # Use pre-computed control embeddings when available
+                if sample_type == "control" and self.control_embeddings is not None:
+                    cid = str(compound_id)
+                    if (cid in self.control_embeddings
+                            and plate_name in self.control_embeddings[cid]
+                            and "control" in self.control_embeddings[cid][plate_name]):
+                        plates_data[plate_name]["control"] = \
+                            self.control_embeddings[cid][plate_name]["control"]
+                    # Skip loading control images entirely when using
+                    # pre-computed embeddings (even if this plate is missing
+                    # from the embeddings file).
+                    continue
+
                 paths = plate_data[sample_type]
                 if not isinstance(paths, list):
                     paths = [paths]

@@ -99,7 +99,17 @@ class TripleCheckModule(pl.LightningModule):
     # ------------------------------------------------------------------
 
     def _process_single_compound(self, compound):
-        """Extract image groups for one compound, returning 4 tensors or None."""
+        """Extract image groups for one compound, returning 4 tensors or None.
+
+        Returns:
+            None if the compound has fewer than 2 plates, otherwise a tuple
+            ``(groups, is_precomputed)`` where *groups* is
+            ``[treated_p1, control_p1, treated_p2, control_p2]`` and
+            *is_precomputed* is a parallel boolean list indicating whether
+            each element is a pre-computed feature vector (``True``) or a
+            batch of images that still needs a backbone forward pass
+            (``False``).
+        """
         plates = compound["plates"]
         plate_names = list(plates.keys())
 
@@ -112,13 +122,20 @@ class TripleCheckModule(pl.LightningModule):
             p1, p2 = plate_names[0], plate_names[1]
 
         groups = []
+        is_precomputed = []
         for pname in [p1, p2]:
             for stype in ["treated", "control"]:
-                imgs = plates[pname][stype]
-                if imgs.dim() == 5:
-                    imgs = imgs.squeeze(0)
-                groups.append(imgs)
-        return groups  # [treated_p1, control_p1, treated_p2, control_p2]
+                data = plates[pname][stype]
+                if data.dim() <= 2:
+                    # Pre-computed feature embedding: (D,) or (N, D)
+                    is_precomputed.append(True)
+                    groups.append(data)
+                else:
+                    if data.dim() == 5:
+                        data = data.squeeze(0)
+                    is_precomputed.append(False)
+                    groups.append(data)
+        return groups, is_precomputed
 
     def _shared_step(self, batch, batch_idx=None):
         """Process a batch of compounds from CompoundPlateDataset.
@@ -135,19 +152,41 @@ class TripleCheckModule(pl.LightningModule):
             compounds = batch
 
         # Collect image groups from all valid compounds
-        all_groups = []       # flat list of image tensors
-        compound_indices = [] # which compound each group-of-4 belongs to
+        all_image_groups = []   # only groups that need backbone encoding
+        group_layout = []       # per compound: list of ('image', idx) or ('precomputed', tensor)
+        compound_indices = []   # which compound each group-of-4 belongs to
         for i, compound in enumerate(compounds):
-            groups = self._process_single_compound(compound)
-            if groups is not None:
-                all_groups.extend(groups)
-                compound_indices.append(i)
+            result = self._process_single_compound(compound)
+            if result is None:
+                continue
+            groups, is_precomputed = result
+            layout = []
+            for g, is_pre in zip(groups, is_precomputed):
+                if is_pre:
+                    layout.append(('precomputed', g))
+                else:
+                    layout.append(('image', len(all_image_groups)))
+                    all_image_groups.append(g)
+            group_layout.append(layout)
+            compound_indices.append(i)
 
         if not compound_indices:
             return None
 
-        # Single backbone forward pass for ALL images across ALL compounds
-        all_feats = self._extract_features_batched(all_groups)
+        # Single backbone forward pass for image groups only
+        encoded_feats = self._extract_features_batched(all_image_groups) if all_image_groups else []
+
+        # Assemble all features in original order
+        all_feats = []
+        for layout in group_layout:
+            for kind, data in layout:
+                if kind == 'image':
+                    all_feats.append(encoded_feats[data])
+                else:
+                    feat = data.to(self.device)
+                    if feat.dim() == 1:
+                        feat = feat.unsqueeze(0)  # (D,) -> (1, D)
+                    all_feats.append(feat)
 
         # Compute per-compound losses
         losses = []
@@ -203,7 +242,7 @@ class TripleCheckModule(pl.LightningModule):
                     u = all_feats[j * 4 + offset + 1].float()   # (N, D)
                     delta_per_plate.append(t - u.mean(dim=0, keepdim=True))
             delta_per_plate = torch.cat(delta_per_plate, dim=0)
-            self.log("diag/feat_std_treated_minus_ctrl", delta_per_plate.std(dim=0).mean().item(),
+            self.log("diag/feat_std_delta", delta_per_plate.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             normed = torch.nn.functional.normalize(all_feat_tensor, dim=-1)
             cos_sim = (normed @ normed.T).fill_diagonal_(0)
