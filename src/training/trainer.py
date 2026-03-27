@@ -192,7 +192,6 @@ class TripleCheckModule(pl.LightningModule):
         losses = []
         delta_norms = []
         feat_norms_treated = []
-        feat_norms_control = []
         for j in range(len(compound_indices)):
             base = j * 4
             feat_t1 = all_feats[base]      # (N, D)
@@ -211,9 +210,7 @@ class TripleCheckModule(pl.LightningModule):
             delta_norms.append(delta1.norm().item())
             delta_norms.append(delta2.norm().item())
             feat_norms_treated.append(mean_t1.norm().item())
-            feat_norms_control.append(mean_u1.norm().item())
             feat_norms_treated.append(mean_t2.norm().item())
-            feat_norms_control.append(mean_u2.norm().item())
 
         loss = torch.stack(losses).mean()
 
@@ -222,17 +219,11 @@ class TripleCheckModule(pl.LightningModule):
             all_feat_tensor = torch.cat([f.float() for f in all_feats], dim=0)  # (total_images, D)
             self.log("diag/feat_norm_treated_mean", sum(feat_norms_treated) / len(feat_norms_treated),
                      on_step=True, on_epoch=False, rank_zero_only=True)
-            self.log("diag/feat_norm_control_mean", sum(feat_norms_control) / len(feat_norms_control),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_mean", sum(delta_norms) / len(delta_norms),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             treated_feats = torch.cat([all_feats[j * 4].float() for j in range(len(compound_indices))]
                                       + [all_feats[j * 4 + 2].float() for j in range(len(compound_indices))], dim=0)
-            control_feats = torch.cat([all_feats[j * 4 + 1].float() for j in range(len(compound_indices))]
-                                      + [all_feats[j * 4 + 3].float() for j in range(len(compound_indices))], dim=0)
             self.log("diag/feat_std_treated", treated_feats.std(dim=0).mean().item(),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
-            self.log("diag/feat_std_control", control_feats.std(dim=0).mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             # Per-plate: treated - mean(control) from same plate
             delta_per_plate = []
