@@ -191,6 +191,7 @@ class TripleCheckModule(pl.LightningModule):
         # Compute per-compound losses
         losses = []
         deltas = []
+        treated_stds = []
         for j in range(len(compound_indices)):
             base = j * 4
             feat_t1 = all_feats[base]      # (N, D)
@@ -205,6 +206,10 @@ class TripleCheckModule(pl.LightningModule):
             deltas.append(delta1)
             deltas.append(delta2)
 
+            # Per-compound std of treated embeddings (across both plates)
+            all_treated = torch.cat([feat_t1.float(), feat_t2.float()], dim=0)  # (N1+N2, D)
+            treated_stds.append(all_treated.std(dim=0).mean().item())
+
         loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
@@ -215,6 +220,17 @@ class TripleCheckModule(pl.LightningModule):
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_std", delta_norms.std().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
+
+            # Log per-compound treated std as a W&B histogram (vertical distribution)
+            try:
+                import wandb
+                if wandb.run is not None:
+                    wandb.log({
+                        "diag/treated_std_distribution": wandb.Histogram(treated_stds),
+                        "diag/treated_std_mean": sum(treated_stds) / len(treated_stds),
+                    }, commit=False)
+            except ImportError:
+                pass
 
         return loss
 
