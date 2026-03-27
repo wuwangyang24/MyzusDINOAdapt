@@ -279,6 +279,36 @@ class TripleCheckModule(pl.LightningModule):
                     mask[j] = False
                     inter_cos_sims.append(cos_matrix[j][mask].mean().item())
 
+            # ── Delta-based cosine similarities (more informative than raw embeddings) ──
+            # Intra: cos sim between Δ_i1 and Δ_i2 for the same compound
+            intra_delta_cos_sims = F.cosine_similarity(
+                deltas_p1_stack.float(), deltas_p2_stack.float(), dim=-1
+            ).tolist()  # (K,)
+
+            # Inter: cos sim between mean deltas of different compounds
+            inter_delta_cos_sims = []
+            K = deltas_p1_stack.shape[0]
+            if K > 1:
+                mean_deltas = ((deltas_p1_stack + deltas_p2_stack) / 2.0).float()  # (K, D)
+                mean_deltas_norm = F.normalize(mean_deltas, dim=-1)
+                delta_cos_matrix = torch.mm(mean_deltas_norm, mean_deltas_norm.T)  # (K, K)
+                for j in range(K):
+                    mask = torch.ones(K, dtype=torch.bool, device=delta_cos_matrix.device)
+                    mask[j] = False
+                    inter_delta_cos_sims.append(delta_cos_matrix[j][mask].mean().item())
+
+            # Log delta-based metrics via PL (scalars)
+            if intra_delta_cos_sims:
+                self.log("diag/intra_delta_cos_sim_mean",
+                         sum(intra_delta_cos_sims) / len(intra_delta_cos_sims),
+                         on_step=True, on_epoch=False, rank_zero_only=True,
+                         batch_size=len(compound_indices))
+            if inter_delta_cos_sims:
+                self.log("diag/inter_delta_cos_sim_mean",
+                         sum(inter_delta_cos_sims) / len(inter_delta_cos_sims),
+                         on_step=True, on_epoch=False, rank_zero_only=True,
+                         batch_size=len(compound_indices))
+
             # Log per-compound treated std as a W&B histogram (vertical distribution)
             try:
                 import wandb
@@ -292,6 +322,10 @@ class TripleCheckModule(pl.LightningModule):
                     if inter_cos_sims:
                         log_dict["diag/inter_compound_cos_sim"] = wandb.Histogram(inter_cos_sims)
                         log_dict["diag/inter_compound_cos_sim_mean"] = sum(inter_cos_sims) / len(inter_cos_sims)
+                    # Delta-based histograms
+                    log_dict["diag/intra_delta_cos_sim"] = wandb.Histogram(intra_delta_cos_sims)
+                    if inter_delta_cos_sims:
+                        log_dict["diag/inter_delta_cos_sim"] = wandb.Histogram(inter_delta_cos_sims)
                     wandb.log(log_dict, commit=False)
             except ImportError:
                 pass
