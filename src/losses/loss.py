@@ -185,7 +185,7 @@ class TripleCheckBatchLoss(nn.Module):
         self,
         deltas_plate1: torch.Tensor,
         deltas_plate2: torch.Tensor,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute batch-level alignment + repulsion loss.
 
@@ -195,7 +195,7 @@ class TripleCheckBatchLoss(nn.Module):
                 K = number of valid compounds in the batch.
 
         Returns:
-            Scalar loss.
+            Tuple of (total_loss, align_loss, repel_loss) scalars.
         """
         K = deltas_plate1.shape[0]
 
@@ -214,7 +214,8 @@ class TripleCheckBatchLoss(nn.Module):
 
         # ---- Repulsion: different-compound deltas should differ ----
         if K < 2 or self.repulsion_weight == 0.0:
-            return align_loss
+            repel_loss = torch.tensor(0.0, device=deltas_plate1.device)
+            return align_loss + self.repulsion_weight * repel_loss, align_loss, repel_loss
 
         # Use both plate deltas as anchors and targets (symmetric).
         # Anchors: [plate1; plate2] of each compound  →  (2K, D)
@@ -239,7 +240,7 @@ class TripleCheckBatchLoss(nn.Module):
 
         repel_loss = F.cross_entropy(sim, labels)
 
-        return align_loss + self.repulsion_weight * repel_loss
+        return align_loss + self.repulsion_weight * repel_loss, align_loss, repel_loss
 
     def compute_deltas(
         self,

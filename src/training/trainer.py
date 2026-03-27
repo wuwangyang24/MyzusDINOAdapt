@@ -215,7 +215,12 @@ class TripleCheckModule(pl.LightningModule):
 
         # Compute loss
         if isinstance(self.loss_fn, TripleCheckBatchLoss):
-            loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
+            loss, align_loss, repel_loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
+            if self.training:
+                self.log("train/align_loss", align_loss,
+                         on_step=True, on_epoch=True, rank_zero_only=True)
+                self.log("train/repel_loss", repel_loss,
+                         on_step=True, on_epoch=True, rank_zero_only=True)
         else:
             # Legacy per-compound loss
             losses = []
