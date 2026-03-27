@@ -218,9 +218,11 @@ class TripleCheckModule(pl.LightningModule):
             loss, align_loss, repel_loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
             if self.training:
                 self.log("train/align_loss", align_loss,
-                         on_step=True, on_epoch=True, rank_zero_only=True)
+                         on_step=True, on_epoch=True, rank_zero_only=True,
+                         batch_size=len(compound_indices))
                 self.log("train/repel_loss", repel_loss,
-                         on_step=True, on_epoch=True, rank_zero_only=True)
+                         on_step=True, on_epoch=True, rank_zero_only=True,
+                         batch_size=len(compound_indices))
         else:
             # Legacy per-compound loss
             losses = []
@@ -237,9 +239,11 @@ class TripleCheckModule(pl.LightningModule):
             all_deltas = torch.cat([deltas_p1_stack, deltas_p2_stack], dim=0)  # (2K, D)
             delta_norms = all_deltas.float().norm(p=2, dim=1)
             self.log("diag/delta_norm_mean", delta_norms.mean().item(),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
+                     on_step=True, on_epoch=False, rank_zero_only=True,
+                     batch_size=len(compound_indices))
             self.log("diag/delta_norm_std", delta_norms.std().item(),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
+                     on_step=True, on_epoch=False, rank_zero_only=True,
+                     batch_size=len(compound_indices))
 
             # Mean norm of treated embeddings across all compounds
             treated_norms = []
@@ -248,7 +252,8 @@ class TripleCheckModule(pl.LightningModule):
                 treated_norms.append(all_feats[base].float().norm(p=2, dim=1).mean().item())
                 treated_norms.append(all_feats[base + 2].float().norm(p=2, dim=1).mean().item())
             self.log("diag/treated_norm_mean", sum(treated_norms) / len(treated_norms),
-                     on_step=True, on_epoch=False, rank_zero_only=True)
+                     on_step=True, on_epoch=False, rank_zero_only=True,
+                     batch_size=len(compound_indices))
 
             # Log per-compound treated std as a W&B histogram (vertical distribution)
             try:
@@ -288,8 +293,8 @@ class TripleCheckModule(pl.LightningModule):
             if param.requires_grad and param.grad is not None:
                 grad_norm = param.grad.norm(2).item()
                 grad_norm_total += grad_norm ** 2
-                self.log(f"grad_norm/{name}", grad_norm, on_step=True, on_epoch=False, rank_zero_only=True)
-        self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True, rank_zero_only=True)
+                self.log(f"grad_norm/{name}", grad_norm, on_step=True, on_epoch=False, rank_zero_only=True, batch_size=1)
+        self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True, rank_zero_only=True, batch_size=1)
 
     def validation_step(self, batch, batch_idx):
         loss = self._shared_step(batch, batch_idx)
