@@ -236,6 +236,15 @@ class TripleCheckModule(pl.LightningModule):
             self.log("diag/delta_norm_std", delta_norms.std().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
 
+            # Mean norm of treated embeddings across all compounds
+            treated_norms = []
+            for j in range(len(compound_indices)):
+                base = j * 4
+                treated_norms.append(all_feats[base].float().norm(p=2, dim=1).mean().item())
+                treated_norms.append(all_feats[base + 2].float().norm(p=2, dim=1).mean().item())
+            self.log("diag/treated_norm_mean", sum(treated_norms) / len(treated_norms),
+                     on_step=True, on_epoch=False, rank_zero_only=True)
+
             # Log per-compound treated std as a W&B histogram (vertical distribution)
             try:
                 import wandb
