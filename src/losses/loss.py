@@ -62,11 +62,10 @@ class TripleCheckLoss(nn.Module):
         Returns:
             Loss value (scalar if reduction != "none")
         """
-        # Control embeddings are pre-averaged (1, D) vectors loaded from file.
-        # Treated embeddings are (N, D) — one row per image.
-        # Δ = mean over treated images of (z_T - z_U)
-        u1 = features_u1.squeeze(0)  # (D,)
-        u2 = features_u2.squeeze(0)  # (D,)
+        # Control features: either pre-averaged (1, D) from file, or (N, D)
+        # from backbone. mean(dim=0) handles both cases correctly.
+        u1 = features_u1.mean(dim=0)  # (D,)
+        u2 = features_u2.mean(dim=0)  # (D,)
         delta_1 = (features_t1 - u1).mean(dim=0, keepdim=True)  # Δ₁ = mean(z_T1 - z_U1)
         delta_2 = (features_t2 - u2).mean(dim=0, keepdim=True)  # Δ₂ = mean(z_T2 - z_U2)
         
