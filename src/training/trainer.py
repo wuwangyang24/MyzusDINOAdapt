@@ -5,6 +5,7 @@ import warnings
 from typing import Optional
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import pytorch_lightning as pl
 
@@ -255,14 +256,43 @@ class TripleCheckModule(pl.LightningModule):
                      on_step=True, on_epoch=False, rank_zero_only=True,
                      batch_size=len(compound_indices))
 
+            # Per-compound: cosine sim between mean embeddings of the two plates
+            intra_cos_sims = []
+            plate_means = []  # (K, D) — per-compound average of both plate means
+            for j in range(len(compound_indices)):
+                base = j * 4
+                mean_p1 = all_feats[base].float().mean(dim=0)      # (D,)
+                mean_p2 = all_feats[base + 2].float().mean(dim=0)  # (D,)
+                intra_cos_sims.append(
+                    F.cosine_similarity(mean_p1.unsqueeze(0), mean_p2.unsqueeze(0)).item()
+                )
+                plate_means.append((mean_p1 + mean_p2) / 2.0)
+
+            # Per-compound: mean cosine sim of compound avg vs all other compounds' avg
+            inter_cos_sims = []
+            if len(plate_means) > 1:
+                plate_means_stack = torch.stack(plate_means, dim=0)  # (K, D)
+                plate_means_norm = F.normalize(plate_means_stack, dim=-1)
+                cos_matrix = torch.mm(plate_means_norm, plate_means_norm.T)  # (K, K)
+                for j in range(len(compound_indices)):
+                    mask = torch.ones(len(compound_indices), dtype=torch.bool, device=cos_matrix.device)
+                    mask[j] = False
+                    inter_cos_sims.append(cos_matrix[j][mask].mean().item())
+
             # Log per-compound treated std as a W&B histogram (vertical distribution)
             try:
                 import wandb
                 if wandb.run is not None:
-                    wandb.log({
+                    log_dict = {
                         "diag/treated_std_distribution": wandb.Histogram(treated_stds),
                         "diag/treated_std_mean": sum(treated_stds) / len(treated_stds),
-                    }, commit=False)
+                        "diag/intra_compound_cos_sim": wandb.Histogram(intra_cos_sims),
+                        "diag/intra_compound_cos_sim_mean": sum(intra_cos_sims) / len(intra_cos_sims),
+                    }
+                    if inter_cos_sims:
+                        log_dict["diag/inter_compound_cos_sim"] = wandb.Histogram(inter_cos_sims)
+                        log_dict["diag/inter_compound_cos_sim_mean"] = sum(inter_cos_sims) / len(inter_cos_sims)
+                    wandb.log(log_dict, commit=False)
             except ImportError:
                 pass
 
