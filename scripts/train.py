@@ -105,6 +105,11 @@ def parse_args():
         help="Distance metric for triple-check loss"
     )
     parser.add_argument(
+        "--normalize-embeddings",
+        action="store_true",
+        help="L2-normalize embeddings before computing deltas in the loss"
+    )
+    parser.add_argument(
         "--device",
         type=str,
         choices=["cuda", "cpu"],
@@ -491,6 +496,7 @@ def main():
         distance_metric=args.distance_metric,
         temperature=1.0,
         reduction="mean",
+        normalize_embeddings=args.normalize_embeddings,
     )
     # Compute step counts for LR scheduler
     # global_step increments per optimizer step, so divide by accumulation factor

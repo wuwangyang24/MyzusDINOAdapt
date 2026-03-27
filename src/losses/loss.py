@@ -23,6 +23,7 @@ class TripleCheckLoss(nn.Module):
         distance_metric: str = "l2",
         temperature: float = 1.0,
         reduction: str = "mean",
+        normalize_embeddings: bool = False,
     ):
         """
         Initialize Triple-Check Loss.
@@ -31,11 +32,15 @@ class TripleCheckLoss(nn.Module):
             distance_metric: Distance metric to use ("l2", "cosine", "kl")
             temperature: Temperature for softening the loss
             reduction: Reduction method ("mean", "sum", "none")
+            normalize_embeddings: If True, L2-normalize all embeddings before
+                computing deltas. Recommended when control embeddings are
+                frozen and treated embeddings come from an adapted backbone.
         """
         super().__init__()
         self.distance_metric = distance_metric
         self.temperature = temperature
         self.reduction = reduction
+        self.normalize_embeddings = normalize_embeddings
         
         # Validate parameters
         if distance_metric not in ["l2", "cosine", "kl"]:
@@ -66,6 +71,14 @@ class TripleCheckLoss(nn.Module):
         # from backbone. mean(dim=0) handles both cases correctly.
         u1 = features_u1.mean(dim=0)  # (D,)
         u2 = features_u2.mean(dim=0)  # (D,)
+
+        # Optionally L2-normalize all embeddings onto the unit hypersphere
+        if self.normalize_embeddings:
+            features_t1 = F.normalize(features_t1, dim=-1)
+            features_t2 = F.normalize(features_t2, dim=-1)
+            u1 = F.normalize(u1, dim=-1)
+            u2 = F.normalize(u2, dim=-1)
+
         delta_1 = (features_t1 - u1).mean(dim=0, keepdim=True)  # Δ₁ = mean(z_T1 - z_U1)
         delta_2 = (features_t2 - u2).mean(dim=0, keepdim=True)  # Δ₂ = mean(z_T2 - z_U2)
         
