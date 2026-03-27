@@ -352,6 +352,7 @@ def main():
     # Load pre-computed control embeddings if specified
     control_embeddings = None
     if args.control_embeddings:
+        logger.info(f"Loading pre-computed control embeddings")
         control_emb_path = Path(args.control_embeddings)
         if not control_emb_path.exists():
             raise FileNotFoundError(f"Control embeddings file not found: {control_emb_path}")
