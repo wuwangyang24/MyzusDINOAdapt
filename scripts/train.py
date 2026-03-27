@@ -123,6 +123,12 @@ def parse_args():
         help="Temperature for InfoNCE repulsion softmax. Default: 0.1"
     )
     parser.add_argument(
+        "--add-align-loss",
+        action="store_true",
+        help="Add explicit alignment loss on top of InfoNCE. "
+             "Without this flag, pure InfoNCE is used (alignment is implicit)."
+    )
+    parser.add_argument(
         "--device",
         type=str,
         choices=["cuda", "cpu"],
@@ -512,9 +518,11 @@ def main():
             repulsion_weight=args.repulsion_weight,
             normalize_embeddings=args.normalize_embeddings,
             reduction="mean",
+            add_align_loss=args.add_align_loss,
         )
         logger.info(f"Using batch-level loss with repulsion_weight={args.repulsion_weight}, "
-                    f"temperature={args.repulsion_temperature}")
+                    f"temperature={args.repulsion_temperature}, "
+                    f"add_align_loss={args.add_align_loss}")
     else:
         loss_fn = TripleCheckLoss(
             distance_metric=args.distance_metric,

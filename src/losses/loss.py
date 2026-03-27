@@ -161,6 +161,7 @@ class TripleCheckBatchLoss(nn.Module):
         repulsion_weight: float = 1.0,
         normalize_embeddings: bool = False,
         reduction: str = "mean",
+        add_align_loss: bool = True,
     ):
         """
         Args:
@@ -169,6 +170,8 @@ class TripleCheckBatchLoss(nn.Module):
             repulsion_weight: Weight λ for the repulsion term.
             normalize_embeddings: L2-normalize embeddings before computing deltas.
             reduction: "mean" or "sum".
+            add_align_loss: If True, add explicit alignment loss on top of InfoNCE.
+                If False, use pure InfoNCE (alignment is implicit in the positive pair).
         """
         super().__init__()
         self.distance_metric = distance_metric
@@ -176,6 +179,7 @@ class TripleCheckBatchLoss(nn.Module):
         self.repulsion_weight = repulsion_weight
         self.normalize_embeddings = normalize_embeddings
         self.reduction = reduction
+        self.add_align_loss = add_align_loss
 
     def forward(
         self,
@@ -196,15 +200,17 @@ class TripleCheckBatchLoss(nn.Module):
         K = deltas_plate1.shape[0]
 
         # ---- Alignment: same-compound plate deltas should match ----
-        if self.distance_metric == "cosine":
-            align = 1.0 - F.cosine_similarity(deltas_plate1, deltas_plate2, dim=-1)  # (K,)
-        else:  # l2
-            align = (deltas_plate1 - deltas_plate2).float().norm(p=2, dim=-1)  # (K,)
+        align_loss = torch.tensor(0.0, device=deltas_plate1.device)
+        if self.add_align_loss:
+            if self.distance_metric == "cosine":
+                align = 1.0 - F.cosine_similarity(deltas_plate1, deltas_plate2, dim=-1)  # (K,)
+            else:  # l2
+                align = (deltas_plate1 - deltas_plate2).float().norm(p=2, dim=-1)  # (K,)
 
-        if self.reduction == "mean":
-            align_loss = align.mean()
-        else:
-            align_loss = align.sum()
+            if self.reduction == "mean":
+                align_loss = align.mean()
+            else:
+                align_loss = align.sum()
 
         # ---- Repulsion: different-compound deltas should differ ----
         if K < 2 or self.repulsion_weight == 0.0:
