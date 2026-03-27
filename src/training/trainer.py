@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 
 warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*optimizer.step.*")
 
-from src.losses import TripleCheckLoss
+from src.losses import TripleCheckLoss, TripleCheckBatchLoss
 
 
 class TripleCheckModule(pl.LightningModule):
@@ -188,9 +188,9 @@ class TripleCheckModule(pl.LightningModule):
                         feat = feat.unsqueeze(0)  # (D,) -> (1, D)
                     all_feats.append(feat)
 
-        # Compute per-compound losses
-        losses = []
-        deltas = []
+        # Compute per-compound deltas
+        deltas_p1 = []   # plate-1 delta per compound
+        deltas_p2 = []   # plate-2 delta per compound
         treated_stds = []
         for j in range(len(compound_indices)):
             base = j * 4
@@ -198,24 +198,39 @@ class TripleCheckModule(pl.LightningModule):
             feat_u1 = all_feats[base + 1]  # (1, D)
             feat_t2 = all_feats[base + 2]  # (N, D)
             feat_u2 = all_feats[base + 3]  # (1, D)
-            losses.append(self.loss_fn(feat_t1, feat_u1, feat_t2, feat_u2))
 
-            # Collect per-plate deltas for diagnostics
-            delta1 = (feat_t1.float() - feat_u1.float()).mean(dim=0)  # (D,)
-            delta2 = (feat_t2.float() - feat_u2.float()).mean(dim=0)  # (D,)
-            deltas.append(delta1)
-            deltas.append(delta2)
+            if isinstance(self.loss_fn, TripleCheckBatchLoss):
+                deltas_p1.append(self.loss_fn.compute_deltas(feat_t1, feat_u1))
+                deltas_p2.append(self.loss_fn.compute_deltas(feat_t2, feat_u2))
+            else:
+                deltas_p1.append((feat_t1.float() - feat_u1.float().mean(dim=0)).mean(dim=0))
+                deltas_p2.append((feat_t2.float() - feat_u2.float().mean(dim=0)).mean(dim=0))
 
             # Per-compound std of treated embeddings (across both plates)
-            all_treated = torch.cat([feat_t1.float(), feat_t2.float()], dim=0)  # (N1+N2, D)
+            all_treated = torch.cat([feat_t1.float(), feat_t2.float()], dim=0)
             treated_stds.append(all_treated.std(dim=0).mean().item())
 
-        loss = torch.stack(losses).mean()
+        deltas_p1_stack = torch.stack(deltas_p1, dim=0)  # (K, D)
+        deltas_p2_stack = torch.stack(deltas_p2, dim=0)  # (K, D)
+
+        # Compute loss
+        if isinstance(self.loss_fn, TripleCheckBatchLoss):
+            loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
+        else:
+            # Legacy per-compound loss
+            losses = []
+            for j in range(len(compound_indices)):
+                base = j * 4
+                losses.append(self.loss_fn(
+                    all_feats[base], all_feats[base + 1],
+                    all_feats[base + 2], all_feats[base + 3],
+                ))
+            loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
         if self.training:
-            delta_stack = torch.stack(deltas, dim=0)          # (2*num_compounds, D)
-            delta_norms = delta_stack.norm(p=2, dim=1)        # (2*num_compounds,)
+            all_deltas = torch.cat([deltas_p1_stack, deltas_p2_stack], dim=0)  # (2K, D)
+            delta_norms = all_deltas.float().norm(p=2, dim=1)
             self.log("diag/delta_norm_mean", delta_norms.mean().item(),
                      on_step=True, on_epoch=False, rank_zero_only=True)
             self.log("diag/delta_norm_std", delta_norms.std().item(),

@@ -1,5 +1,5 @@
 """Loss functions for DINO LoRA adaptation."""
 
-from .loss import TripleCheckLoss
+from .loss import TripleCheckLoss, TripleCheckBatchLoss
 
-__all__ = ["TripleCheckLoss"]
+__all__ = ["TripleCheckLoss", "TripleCheckBatchLoss"]

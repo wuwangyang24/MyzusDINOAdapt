@@ -14,7 +14,7 @@ from pytorch_lightning.loggers import TensorBoardLogger
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
-from src.losses import TripleCheckLoss
+from src.losses import TripleCheckLoss, TripleCheckBatchLoss
 from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms, compound_collate_fn
 from src.training import TripleCheckModule
 from src.utils import setup_logger, load_config
@@ -108,6 +108,19 @@ def parse_args():
         "--normalize-embeddings",
         action="store_true",
         help="L2-normalize embeddings before computing deltas in the loss"
+    )
+    parser.add_argument(
+        "--repulsion-weight",
+        type=float,
+        default=0.0,
+        help="Weight for cross-compound contrastive repulsion term. "
+             "When > 0, uses batch-level loss with InfoNCE repulsion. Default: 0 (disabled)"
+    )
+    parser.add_argument(
+        "--repulsion-temperature",
+        type=float,
+        default=0.1,
+        help="Temperature for InfoNCE repulsion softmax. Default: 0.1"
     )
     parser.add_argument(
         "--device",
@@ -492,12 +505,23 @@ def main():
         )
 
     # Create loss function and Lightning module
-    loss_fn = TripleCheckLoss(
-        distance_metric=args.distance_metric,
-        temperature=1.0,
-        reduction="mean",
-        normalize_embeddings=args.normalize_embeddings,
-    )
+    if args.repulsion_weight > 0.0:
+        loss_fn = TripleCheckBatchLoss(
+            distance_metric=args.distance_metric,
+            temperature=args.repulsion_temperature,
+            repulsion_weight=args.repulsion_weight,
+            normalize_embeddings=args.normalize_embeddings,
+            reduction="mean",
+        )
+        logger.info(f"Using batch-level loss with repulsion_weight={args.repulsion_weight}, "
+                    f"temperature={args.repulsion_temperature}")
+    else:
+        loss_fn = TripleCheckLoss(
+            distance_metric=args.distance_metric,
+            temperature=1.0,
+            reduction="mean",
+            normalize_embeddings=args.normalize_embeddings,
+        )
     # Compute step counts for LR scheduler
     # global_step increments per optimizer step, so divide by accumulation factor
     steps_per_epoch = len(train_dataloader)

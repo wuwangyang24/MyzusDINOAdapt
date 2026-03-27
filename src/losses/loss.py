@@ -134,6 +134,129 @@ class TripleCheckLoss(nn.Module):
         return kl_div
 
 
+class TripleCheckBatchLoss(nn.Module):
+    """
+    Batch-level Triple-Check Loss with contrastive repulsion.
+
+    For each compound *i* in the batch, two plate deltas are computed:
+        Δ_i1 = mean(z_T1 - z_U1),  Δ_i2 = mean(z_T2 - z_U2)
+
+    The loss has two terms:
+
+    1. **Alignment** (per-compound): encourage Δ_i1 ≈ Δ_i2 for the same
+       compound (same as the original TripleCheckLoss).
+    2. **Repulsion** (cross-compound): push the average delta of compound *i*
+       away from the average delta of compound *j* (j ≠ i) within the batch,
+       preventing the trivial solution where all deltas collapse to the same
+       direction.
+
+    The final loss is:
+        L = L_align + repulsion_weight * L_repel
+    """
+
+    def __init__(
+        self,
+        distance_metric: str = "l2",
+        temperature: float = 0.1,
+        repulsion_weight: float = 1.0,
+        normalize_embeddings: bool = False,
+        reduction: str = "mean",
+    ):
+        """
+        Args:
+            distance_metric: "l2" or "cosine" for the alignment term.
+            temperature: Temperature for InfoNCE-style softmax.
+            repulsion_weight: Weight λ for the repulsion term.
+            normalize_embeddings: L2-normalize embeddings before computing deltas.
+            reduction: "mean" or "sum".
+        """
+        super().__init__()
+        self.distance_metric = distance_metric
+        self.temperature = temperature
+        self.repulsion_weight = repulsion_weight
+        self.normalize_embeddings = normalize_embeddings
+        self.reduction = reduction
+
+    def forward(
+        self,
+        deltas_plate1: torch.Tensor,
+        deltas_plate2: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute batch-level alignment + repulsion loss.
+
+        Args:
+            deltas_plate1: (K, D) — per-compound delta from plate 1.
+            deltas_plate2: (K, D) — per-compound delta from plate 2.
+                K = number of valid compounds in the batch.
+
+        Returns:
+            Scalar loss.
+        """
+        K = deltas_plate1.shape[0]
+
+        # ---- Alignment: same-compound plate deltas should match ----
+        if self.distance_metric == "cosine":
+            align = 1.0 - F.cosine_similarity(deltas_plate1, deltas_plate2, dim=-1)  # (K,)
+        else:  # l2
+            align = (deltas_plate1 - deltas_plate2).float().norm(p=2, dim=-1)  # (K,)
+
+        if self.reduction == "mean":
+            align_loss = align.mean()
+        else:
+            align_loss = align.sum()
+
+        # ---- Repulsion: different-compound deltas should differ ----
+        if K < 2 or self.repulsion_weight == 0.0:
+            return align_loss
+
+        # Use both plate deltas as anchors and targets (symmetric).
+        # Anchors: [plate1; plate2] of each compound  →  (2K, D)
+        # Positive for anchor i is the other plate of the same compound.
+        # Negatives are all deltas from other compounds.
+        all_deltas = torch.cat([deltas_plate1, deltas_plate2], dim=0)  # (2K, D)
+        all_deltas = F.normalize(all_deltas.float(), dim=-1)
+
+        # Similarity matrix: (2K, 2K)
+        sim = torch.mm(all_deltas, all_deltas.T) / self.temperature
+
+        # Mask out self-similarity on the diagonal — a vector dotted with
+        # itself is always the largest entry and would dominate the softmax.
+        sim.fill_diagonal_(float('-inf'))
+
+        # Labels: anchor i (plate1 of compound j) pairs with i+K (plate2 of compound j)
+        # and vice versa.
+        labels = torch.cat([
+            torch.arange(K, 2 * K, device=sim.device),  # plate1 → plate2
+            torch.arange(0, K, device=sim.device),       # plate2 → plate1
+        ])  # (2K,)
+
+        repel_loss = F.cross_entropy(sim, labels)
+
+        return align_loss + self.repulsion_weight * repel_loss
+
+    def compute_deltas(
+        self,
+        features_t: torch.Tensor,
+        features_u: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute mean delta for a single compound-plate pair.
+
+        Args:
+            features_t: (N, D) treated features.
+            features_u: (1, D) or (N, D) control features.
+
+        Returns:
+            (D,) delta vector.
+        """
+        u = features_u.mean(dim=0)
+        if self.normalize_embeddings:
+            features_t = F.normalize(features_t, dim=-1)
+            u = F.normalize(u, dim=-1)
+        return (features_t - u).mean(dim=0)
+
+
 class TripleCheckWithContrastiveLoss(nn.Module):
     """
     Triple-Check Loss combined with contrastive learning.
