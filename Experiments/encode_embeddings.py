@@ -463,6 +463,46 @@ def encode_paths(
 # Main
 # ---------------------------------------------------------------------------
 
+def _encode_segment(
+    image_paths: List[str],
+    root_dir: Path,
+    model: nn.Module,
+    device: torch.device,
+    batch_size: int,
+    transform: transforms.Compose,
+    return_reg_tokens: bool,
+    use_amp: bool,
+    num_workers: int,
+) -> torch.Tensor:
+    """Encode a single segment of images and return (N, D) CPU tensor."""
+    dataset = _ImageDataset(image_paths, root_dir, transform)
+    pin = device.type == "cuda"
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin,
+        persistent_workers=False,
+    )
+    amp_enabled = use_amp and device.type == "cuda"
+    parts: List[torch.Tensor] = []
+
+    with torch.no_grad():
+        for batch_tensor in loader:
+            batch_tensor = batch_tensor.to(device, non_blocking=pin)
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                if return_reg_tokens:
+                    backbone = _get_backbone(model)
+                    out = backbone.forward_features(batch_tensor)
+                    reg_tok = out["x_norm_regtokens"]
+                    parts.append(reg_tok.mean(dim=1).float().cpu())
+                else:
+                    features = model(batch_tensor)
+                    parts.append(features.float().cpu())
+
+    result = torch.cat(parts, dim=0)
+    del parts
+    return result
+
+
 def encode_metadata(
     metadata: List[Dict],
     root_dir: Path,
@@ -477,23 +517,18 @@ def encode_metadata(
     """
     Iterate over compounds and plates and build the embedding dictionary.
 
-    Collects all image paths up-front and encodes them in a single
-    DataLoader pass for maximum throughput, then slices the features
-    back into the per-compound / per-plate structure.
+    Processes each segment (compound / plate / role) independently so that
+    only one segment's worth of images lives in RAM at a time.
 
     Returns:
         Nested dict: compound_id -> plate_id -> {"treated": Tensor, "control": Tensor}
-        When *return_reg_tokens* is True the dict also contains
-        "treated_reg_tokens" and "control_reg_tokens".
     """
     COMPOUND_KEY = "Compound"
 
     # ------------------------------------------------------------------
-    # Phase 1 — collect every image path and record segment metadata
+    # Collect segments (paths grouped by compound / plate / role)
     # ------------------------------------------------------------------
-    all_paths: List[str] = []
-    # Each segment: (compound_id, plate_id, role, count)
-    segments: List[tuple] = []
+    segments: List[tuple] = []  # (compound_id, plate_id, role, paths)
 
     for compound_entry in metadata:
         compound_id = str(compound_entry[COMPOUND_KEY])
@@ -510,76 +545,44 @@ def encode_metadata(
                 continue
 
             if treated_paths:
-                segments.append((compound_id, plate_id, "treated", len(treated_paths)))
-                all_paths.extend(treated_paths)
+                segments.append((compound_id, plate_id, "treated", treated_paths))
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
                       f"no treated images.")
 
             if control_paths:
-                segments.append((compound_id, plate_id, "control", len(control_paths)))
-                all_paths.extend(control_paths)
+                segments.append((compound_id, plate_id, "control", control_paths))
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
                       f"no control images.")
 
-    if not all_paths:
+    total_images = sum(len(paths) for _, _, _, paths in segments)
+    if total_images == 0:
         return {}
-
-    print(f"Encoding {len(all_paths)} images total...")
-
-    # ------------------------------------------------------------------
-    # Phase 2 — encode everything in one DataLoader pass
-    # ------------------------------------------------------------------
-    dataset = _ImageDataset(all_paths, root_dir, transform)
-    pin = device.type == "cuda"
-    loader = torch.utils.data.DataLoader(
-        dataset, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=pin,
-        persistent_workers=False,
-    )
-
-    all_features: List[torch.Tensor] = []
-    amp_enabled = use_amp and device.type == "cuda"
-
-    with torch.no_grad():
-        for batch_tensor in tqdm(loader, desc="Encoding", unit="batch"):
-            batch_tensor = batch_tensor.to(device, non_blocking=pin)
-            with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                if return_reg_tokens:
-                    backbone = _get_backbone(model)
-                    out = backbone.forward_features(batch_tensor)
-                    reg_tok = out["x_norm_regtokens"]          # (B, N_reg, D)
-                    all_features.append(reg_tok.mean(dim=1).float().cpu())
-                else:
-                    features = model(batch_tensor)              # (B, D)
-                    all_features.append(features.float().cpu())
-
-    all_features_cat = torch.cat(all_features, dim=0)          # (total, D)
-    del all_features  # free batch-level list
+    print(f"Encoding {total_images} images across {len(segments)} segments...")
 
     # ------------------------------------------------------------------
-    # Phase 3 — reassemble into the nested dict
+    # Encode one segment at a time to keep RAM usage flat
     # ------------------------------------------------------------------
     result: Dict = {}
-    offset = 0
 
-    for compound_id, plate_id, role, count in segments:
+    for compound_id, plate_id, role, paths in tqdm(segments, desc="Segments"):
+        feats = _encode_segment(
+            paths, root_dir, model, device, batch_size,
+            transform, return_reg_tokens, use_amp, num_workers,
+        )
+
         if compound_id not in result:
             result[compound_id] = {}
         if plate_id not in result[compound_id]:
             result[compound_id][plate_id] = {}
 
-        feats = all_features_cat[offset : offset + count].clone()
-        offset += count
-
         if role == "treated":
             result[compound_id][plate_id]["treated"] = feats       # (N, D)
         else:
             result[compound_id][plate_id]["control"] = feats.mean(dim=0)  # (D,)
-
-    del all_features_cat  # free the large concatenated tensor
-    gc.collect()
+            del feats
+        gc.collect()
 
     return result
 
