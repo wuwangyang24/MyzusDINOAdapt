@@ -550,6 +550,7 @@ def encode_metadata(
                     all_features.append(features.float().cpu())
 
     all_features_cat = torch.cat(all_features, dim=0)          # (total, D)
+    del all_features  # free batch-level list
 
     # ------------------------------------------------------------------
     # Phase 3 — reassemble into the nested dict
@@ -563,7 +564,7 @@ def encode_metadata(
         if plate_id not in result[compound_id]:
             result[compound_id][plate_id] = {}
 
-        feats = all_features_cat[offset : offset + count]
+        feats = all_features_cat[offset : offset + count].clone()
         offset += count
 
         if role == "treated":
