@@ -127,7 +127,6 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.io import decode_image, ImageReadMode
-from tqdm import tqdm
 
 # Make sure the project's src/ package is importable regardless of cwd
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -421,14 +420,16 @@ def encode_paths(
     """
     dataset = _ImagePathDataset(image_paths, root_dir, transform)
     use_pin = device.type == "cuda"
+    # Avoid worker-spawn overhead for tiny datasets (esp. on Windows)
+    effective_workers = num_workers if len(dataset) > batch_size else 0
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
+        num_workers=effective_workers,
         pin_memory=use_pin,
-        persistent_workers=num_workers > 0,
-        prefetch_factor=2 if num_workers > 0 else None,
+        persistent_workers=effective_workers > 0,
+        prefetch_factor=2 if effective_workers > 0 else None,
     )
 
     all_features: List[torch.Tensor] = []
@@ -469,63 +470,66 @@ def encode_metadata(
     """
     Iterate over compounds and plates and build the embedding dictionary.
 
+    All image paths are collected first and encoded in a single DataLoader
+    pass to avoid repeated worker-spawn overhead.
+
     Returns:
         Nested dict: compound_id → plate_id → {"treated": Tensor, "control": Tensor}
-        When *return_reg_tokens* is True the dict also contains
-        "treated_reg_tokens" and "control_reg_tokens".
     """
     COMPOUND_KEY = "Compound"
-    result: Dict = {}
 
-    for compound_entry in tqdm(metadata, desc="Compounds", unit="compound"):
+    # ------------------------------------------------------------------
+    # Phase 1: collect every image path and record where results go
+    # ------------------------------------------------------------------
+    all_paths: List[str] = []
+    # Each entry: (compound_id, plate_id, role, start_idx, count)
+    manifest: List[tuple] = []
+
+    for compound_entry in metadata:
         compound_id: str = str(compound_entry[COMPOUND_KEY])
-        result[compound_id] = {}
-
-        # All keys that are NOT "Compound" are plate identifiers
         plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
 
-        for plate_id in tqdm(plate_ids, desc=f"  Compound {compound_id} plates",
-                             leave=False, unit="plate"):
+        for plate_id in plate_ids:
             plate_data = compound_entry[plate_id]
 
-            treated_paths: List[str] = plate_data.get("treated", [])
-            control_paths: List[str] = plate_data.get("control", [])
+            for role in ("treated", "control"):
+                paths: List[str] = plate_data.get(role, [])
+                if paths:
+                    start = len(all_paths)
+                    all_paths.extend(paths)
+                    manifest.append((compound_id, plate_id, role, start, len(paths)))
 
-            if not treated_paths and not control_paths:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no images found — skipping.")
-                continue
+    if not all_paths:
+        print("[WARN] No images found in metadata.")
+        return {}
 
-            plate_result: Dict[str, torch.Tensor] = {}
+    print(f"Total images to encode: {len(all_paths)}")
 
-            # ---- Treated: encode each image individually ----
-            if treated_paths:
-                treated_feats = encode_paths(
-                    treated_paths, root_dir, model, device, batch_size,
-                    transform=transform,
-                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
-                    num_workers=num_workers,
-                )  # (N_treated, D)
-                plate_result["treated"] = treated_feats
-            else:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no treated images.")
+    # ------------------------------------------------------------------
+    # Phase 2: encode all images in one DataLoader pass
+    # ------------------------------------------------------------------
+    all_features = encode_paths(
+        all_paths, root_dir, model, device, batch_size,
+        transform=transform,
+        return_reg_tokens=return_reg_tokens, use_amp=use_amp,
+        num_workers=num_workers,
+    )  # (N_total, D)
 
-            # ---- Control: encode then average ----
-            if control_paths:
-                control_feats = encode_paths(
-                    control_paths, root_dir, model, device, batch_size,
-                    transform=transform,
-                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
-                    num_workers=num_workers,
-                )  # (N_control, D)
-                control_avg = control_feats.mean(dim=0)   # (D,)
-                plate_result["control"] = control_avg
-            else:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no control images.")
+    # ------------------------------------------------------------------
+    # Phase 3: scatter results back into the nested dict
+    # ------------------------------------------------------------------
+    result: Dict = {}
 
-            result[compound_id][plate_id] = plate_result
+    for compound_id, plate_id, role, start, count in manifest:
+        if compound_id not in result:
+            result[compound_id] = {}
+        if plate_id not in result[compound_id]:
+            result[compound_id][plate_id] = {}
+
+        feats = all_features[start: start + count]  # (count, D)
+        if role == "control":
+            feats = feats.mean(dim=0)  # (D,)
+        result[compound_id][plate_id][role] = feats
 
     return result
 
