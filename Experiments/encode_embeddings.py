@@ -384,6 +384,9 @@ def load_model(
     model.to(device)
     model.eval()
     _freeze(model)
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        model = torch.compile(model)
     feat_dim = vae_latent_dim if model_type == "custom_vae" else BACKBONE_DIM.get(backbone_name, '?')
     print(f"  ✓ Model ready  (feature dim ≈ {feat_dim})")
     return model
