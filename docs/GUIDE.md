@@ -176,26 +176,6 @@ loss_fn = TripleCheckLoss(
 )
 ```
 
-### TripleCheckWithContrastiveLoss (Advanced)
-
-Combines triple-check consistency with contrastive learning to ensure treated and untreated samples are well-separated:
-
-```python
-from src.losses import TripleCheckWithContrastiveLoss
-
-loss_fn = TripleCheckWithContrastiveLoss(
-    distance_metric="l2",
-    temperature=1.0,
-    contrastive_weight=0.5,  # Weight for contrastive term
-    margin=1.0,  # Margin for contrastive loss
-    reduction="mean"
-)
-```
-
-This is useful when you want to enforce both:
-1. **Consistency**: Treat Effect is similar across bioassays
-2. **Separation**: Treated and untreated samples are distinguishable
-
 ## Training Examples
 
 ### Basic Training with L2 Distance
@@ -225,7 +205,7 @@ python scripts/train.py \
 
 ```python
 from src.models import DINOWithLoRA, LoRAConfig
-from src.losses import TripleCheckWithContrastiveLoss
+from src.losses import TripleCheckLoss
 from src.data import CompoundPlateDataset, get_default_transforms
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -239,10 +219,8 @@ model = DINOWithLoRA(
     num_classes=None
 )
 
-loss_fn = TripleCheckWithContrastiveLoss(
+loss_fn = TripleCheckLoss(
     distance_metric="l2",
-    contrastive_weight=0.3,
-    margin=1.5
 )
 
 # Create datasets

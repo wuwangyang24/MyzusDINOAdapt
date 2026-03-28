@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from src.models import DINOWithLoRA, LoRAConfig
-from src.losses import TripleCheckLoss, TripleCheckWithContrastiveLoss
+from src.losses import TripleCheckLoss
 from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -119,18 +119,6 @@ loss_fn = TripleCheckLoss(
 loss_fn = TripleCheckLoss(
     distance_metric="cosine",
     temperature=1.0,
-    reduction="mean"
-)
-```
-
-### Option C: Triple-Check with Contrastive Learning
-
-```python
-loss_fn = TripleCheckWithContrastiveLoss(
-    distance_metric="l2",
-    temperature=1.0,
-    contrastive_weight=0.5,  # Balance consistency vs separation
-    margin=1.0,  # Minimum separation between treated/untreated
     reduction="mean"
 )
 ```
