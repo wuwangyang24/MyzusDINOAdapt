@@ -199,6 +199,29 @@ class _VAEEncoderWrapper(nn.Module):
         return mu
 
 
+class _ImageDataset(torch.utils.data.Dataset):
+    """Lightweight map-style dataset that decodes images from disk."""
+
+    def __init__(self, paths: List[str], root_dir: Path,
+                 transform: transforms.Compose) -> None:
+        self.paths = paths
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        full_path = self.root_dir / self.paths[idx]
+        try:
+            img = decode_image(str(full_path), mode=ImageReadMode.RGB)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load image '{full_path}': {exc}"
+            ) from exc
+        return self.transform(img)
+
+
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
@@ -380,6 +403,7 @@ def encode_paths(
     transform: transforms.Compose = DINO_TRANSFORM,
     return_reg_tokens: bool = False,
     use_amp: bool = True,
+    num_workers: int = 4,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
@@ -393,6 +417,7 @@ def encode_paths(
         transform:   Torchvision transform applied to each PIL image.
         return_reg_tokens: If True, also return register tokens via
                            DINOv2's ``forward_features`` method.
+        num_workers: DataLoader workers for parallel image loading.
 
     Returns:
         If return_reg_tokens is False:
@@ -401,25 +426,19 @@ def encode_paths(
             Tensor of shape (N, D) on CPU  (register tokens averaged
             over the N_reg dimension per image).
     """
+    dataset = _ImageDataset(image_paths, root_dir, transform)
+    pin = device.type == "cuda"
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin,
+        persistent_workers=num_workers > 0,
+    )
+
     all_features: List[torch.Tensor] = []
+    amp_enabled = use_amp and device.type == "cuda"
 
-    for start in range(0, len(image_paths), batch_size):
-        batch_paths = image_paths[start: start + batch_size]
-        batch_tensors: List[torch.Tensor] = []
-
-        for rel_path in batch_paths:
-            full_path = root_dir / rel_path
-            try:
-                img = decode_image(str(full_path), mode=ImageReadMode.RGB)
-                batch_tensors.append(transform(img))
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load image '{full_path}': {exc}"
-                ) from exc
-
-        batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
-
-        amp_enabled = use_amp and device.type == "cuda"
+    for batch in loader:
+        batch = batch.to(device, non_blocking=pin)
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
             if return_reg_tokens:
                 backbone = _get_backbone(model)
@@ -447,29 +466,35 @@ def encode_metadata(
     return_reg_tokens: bool = False,
     use_amp: bool = True,
     transform: transforms.Compose = DINO_TRANSFORM,
+    num_workers: int = 4,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
 
+    Collects all image paths up-front and encodes them in a single
+    DataLoader pass for maximum throughput, then slices the features
+    back into the per-compound / per-plate structure.
+
     Returns:
-        Nested dict: compound_id → plate_id → {"treated": Tensor, "control": Tensor}
+        Nested dict: compound_id -> plate_id -> {"treated": Tensor, "control": Tensor}
         When *return_reg_tokens* is True the dict also contains
         "treated_reg_tokens" and "control_reg_tokens".
     """
     COMPOUND_KEY = "Compound"
-    result: Dict = {}
 
-    for compound_entry in tqdm(metadata, desc="Compounds", unit="compound"):
-        compound_id: str = str(compound_entry[COMPOUND_KEY])
-        result[compound_id] = {}
+    # ------------------------------------------------------------------
+    # Phase 1 — collect every image path and record segment metadata
+    # ------------------------------------------------------------------
+    all_paths: List[str] = []
+    # Each segment: (compound_id, plate_id, role, count)
+    segments: List[tuple] = []
 
-        # All keys that are NOT "Compound" are plate identifiers
+    for compound_entry in metadata:
+        compound_id = str(compound_entry[COMPOUND_KEY])
         plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
 
-        for plate_id in tqdm(plate_ids, desc=f"  Compound {compound_id} plates",
-                             leave=False, unit="plate"):
+        for plate_id in plate_ids:
             plate_data = compound_entry[plate_id]
-
             treated_paths: List[str] = plate_data.get("treated", [])
             control_paths: List[str] = plate_data.get("control", [])
 
@@ -478,34 +503,73 @@ def encode_metadata(
                       f"no images found — skipping.")
                 continue
 
-            plate_result: Dict[str, torch.Tensor] = {}
-
-            # ---- Treated: encode each image individually ----
             if treated_paths:
-                treated_feats = encode_paths(
-                    treated_paths, root_dir, model, device, batch_size,
-                    transform=transform,
-                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
-                )  # (N_treated, D)
-                plate_result["treated"] = treated_feats
+                segments.append((compound_id, plate_id, "treated", len(treated_paths)))
+                all_paths.extend(treated_paths)
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
                       f"no treated images.")
 
-            # ---- Control: encode then average ----
             if control_paths:
-                control_feats = encode_paths(
-                    control_paths, root_dir, model, device, batch_size,
-                    transform=transform,
-                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
-                )  # (N_control, D)
-                control_avg = control_feats.mean(dim=0)   # (D,)
-                plate_result["control"] = control_avg
+                segments.append((compound_id, plate_id, "control", len(control_paths)))
+                all_paths.extend(control_paths)
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
                       f"no control images.")
 
-            result[compound_id][plate_id] = plate_result
+    if not all_paths:
+        return {}
+
+    print(f"Encoding {len(all_paths)} images total...")
+
+    # ------------------------------------------------------------------
+    # Phase 2 — encode everything in one DataLoader pass
+    # ------------------------------------------------------------------
+    dataset = _ImageDataset(all_paths, root_dir, transform)
+    pin = device.type == "cuda"
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin,
+        persistent_workers=num_workers > 0,
+    )
+
+    all_features: List[torch.Tensor] = []
+    amp_enabled = use_amp and device.type == "cuda"
+
+    with torch.no_grad():
+        for batch_tensor in tqdm(loader, desc="Encoding", unit="batch"):
+            batch_tensor = batch_tensor.to(device, non_blocking=pin)
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                if return_reg_tokens:
+                    backbone = _get_backbone(model)
+                    out = backbone.forward_features(batch_tensor)
+                    reg_tok = out["x_norm_regtokens"]          # (B, N_reg, D)
+                    all_features.append(reg_tok.mean(dim=1).float().cpu())
+                else:
+                    features = model(batch_tensor)              # (B, D)
+                    all_features.append(features.float().cpu())
+
+    all_features_cat = torch.cat(all_features, dim=0)          # (total, D)
+
+    # ------------------------------------------------------------------
+    # Phase 3 — reassemble into the nested dict
+    # ------------------------------------------------------------------
+    result: Dict = {}
+    offset = 0
+
+    for compound_id, plate_id, role, count in segments:
+        if compound_id not in result:
+            result[compound_id] = {}
+        if plate_id not in result[compound_id]:
+            result[compound_id][plate_id] = {}
+
+        feats = all_features_cat[offset : offset + count]
+        offset += count
+
+        if role == "treated":
+            result[compound_id][plate_id]["treated"] = feats       # (N, D)
+        else:
+            result[compound_id][plate_id]["control"] = feats.mean(dim=0)  # (D,)
 
     return result
 
@@ -591,6 +655,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size", type=int, default=64,
         help="Number of images per forward pass. Default: 64",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4,
+        help="DataLoader workers for parallel image loading. Default: 4",
     )
     parser.add_argument(
         "--no_amp", action="store_true", default=False,
@@ -698,6 +766,7 @@ def main() -> None:
         return_reg_tokens=args.return_reg_tokens,
         use_amp=not args.no_amp,
         transform=transform,
+        num_workers=args.num_workers,
     )
 
     # ------------------------------------------------------------------
