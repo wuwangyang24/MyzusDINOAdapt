@@ -227,49 +227,6 @@ def parse_args():
              "instead of being encoded by the backbone during training.",
     )
 
-    # ── Efficacy classifier validation ──
-    parser.add_argument(
-        "--efficacy-val",
-        action="store_true",
-        help="Run efficacy classification as a validation metric"
-    )
-    parser.add_argument(
-        "--efficacy-train-metadata",
-        type=str,
-        default="Data/Metadata/metadata_compound_all20ppm.json",
-        help="Path to training metadata JSON for efficacy classifier"
-    )
-    parser.add_argument(
-        "--efficacy-train-labels",
-        type=str,
-        default="Data/Embeddings/efficacy.pt",
-        help="Path to training efficacy .pt file"
-    )
-    parser.add_argument(
-        "--efficacy-inference-metadata",
-        type=str,
-        default="Data/Metadata/metadata_compound_all100ppm.json",
-        help="Path to inference metadata JSON for efficacy classifier"
-    )
-    parser.add_argument(
-        "--efficacy-inference-labels",
-        type=str,
-        default="Data/Metadata/compounds500ppm.csv",
-        help="Path to inference efficacy CSV (columns: 'Compound No', 'Active')"
-    )
-    parser.add_argument(
-        "--efficacy-image-root",
-        type=str,
-        default="",
-        help="Root directory for efficacy classifier image paths (defaults to --data-root-dir)"
-    )
-    parser.add_argument(
-        "--efficacy-threshold",
-        type=float,
-        default=70.0,
-        help="Efficacy binarisation threshold (default: 70.0)"
-    )
-
     return parser.parse_args()
 
 
@@ -578,22 +535,6 @@ def main():
         save_on_train_epoch_end=True,
     )
     callbacks = [checkpoint_callback, last_checkpoint_callback, LearningRateMonitor(logging_interval="step")]
-
-    # Efficacy classifier callback (optional)
-    if args.efficacy_val:
-        from src.training.efficacy_callback import EfficacyClassifierCallback
-        efficacy_image_root = args.efficacy_image_root or args.data_root_dir or args.data_dir
-        efficacy_callback = EfficacyClassifierCallback(
-            train_metadata_path=args.efficacy_train_metadata,
-            train_efficacy_path=args.efficacy_train_labels,
-            inference_metadata_path=args.efficacy_inference_metadata,
-            inference_efficacy_csv=args.efficacy_inference_labels,
-            image_root_dir=efficacy_image_root,
-            threshold=args.efficacy_threshold,
-            every_n_steps=args.val_every_steps or 0,
-        )
-        callbacks.append(efficacy_callback)
-        logger.info("Efficacy classifier validation enabled")
 
     # --- Loggers ---
     tb_logger = TensorBoardLogger(
