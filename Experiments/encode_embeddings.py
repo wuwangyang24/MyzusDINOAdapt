@@ -124,9 +124,9 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.io import decode_image, ImageReadMode
+from tqdm import tqdm
 
 # Make sure the project's src/ package is importable regardless of cwd
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -197,23 +197,6 @@ class _VAEEncoderWrapper(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _z, mu, _log_var = self.encoder(x)
         return mu
-
-
-class _ImagePathDataset(Dataset):
-    """Lightweight dataset that loads images from a list of relative paths."""
-    def __init__(self, image_paths: List[str], root_dir: Path,
-                 transform: transforms.Compose) -> None:
-        self.image_paths = image_paths
-        self.root_dir = root_dir
-        self.transform = transform
-
-    def __len__(self) -> int:
-        return len(self.image_paths)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        full_path = self.root_dir / self.image_paths[idx]
-        img = decode_image(str(full_path), mode=ImageReadMode.RGB)
-        return self.transform(img)
 
 
 # ---------------------------------------------------------------------------
@@ -397,12 +380,9 @@ def encode_paths(
     transform: transforms.Compose = DINO_TRANSFORM,
     return_reg_tokens: bool = False,
     use_amp: bool = True,
-    num_workers: int = 4,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
-
-    Uses a DataLoader with multiple workers for parallel image loading.
 
     Args:
         image_paths: Relative paths from root_dir.
@@ -410,32 +390,34 @@ def encode_paths(
         model:       DINO backbone (eval mode, no grad).
         device:      Torch device.
         batch_size:  Number of images per forward pass.
-        transform:   Torchvision transform applied to each image.
-        return_reg_tokens: If True, return register tokens via
+        transform:   Torchvision transform applied to each PIL image.
+        return_reg_tokens: If True, also return register tokens via
                            DINOv2's ``forward_features`` method.
-        num_workers: Number of DataLoader workers for parallel I/O.
 
     Returns:
-        Tensor of shape (N, D) on CPU.
+        If return_reg_tokens is False:
+            Tensor of shape (N, D) on CPU  (CLS token features).
+        If return_reg_tokens is True:
+            Tensor of shape (N, D) on CPU  (register tokens averaged
+            over the N_reg dimension per image).
     """
-    dataset = _ImagePathDataset(image_paths, root_dir, transform)
-    use_pin = device.type == "cuda"
-    # Avoid worker-spawn overhead for tiny datasets (esp. on Windows)
-    effective_workers = num_workers if len(dataset) > batch_size else 0
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=effective_workers,
-        pin_memory=use_pin,
-        persistent_workers=effective_workers > 0,
-        prefetch_factor=2 if effective_workers > 0 else None,
-    )
-
     all_features: List[torch.Tensor] = []
 
-    for batch in loader:
-        batch = batch.to(device, non_blocking=use_pin)
+    for start in range(0, len(image_paths), batch_size):
+        batch_paths = image_paths[start: start + batch_size]
+        batch_tensors: List[torch.Tensor] = []
+
+        for rel_path in batch_paths:
+            full_path = root_dir / rel_path
+            try:
+                img = decode_image(str(full_path), mode=ImageReadMode.RGB)
+                batch_tensors.append(transform(img))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load image '{full_path}': {exc}"
+                ) from exc
+
+        batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
 
         amp_enabled = use_amp and device.type == "cuda"
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
@@ -465,71 +447,65 @@ def encode_metadata(
     return_reg_tokens: bool = False,
     use_amp: bool = True,
     transform: transforms.Compose = DINO_TRANSFORM,
-    num_workers: int = 4,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
 
-    All image paths are collected first and encoded in a single DataLoader
-    pass to avoid repeated worker-spawn overhead.
-
     Returns:
         Nested dict: compound_id → plate_id → {"treated": Tensor, "control": Tensor}
+        When *return_reg_tokens* is True the dict also contains
+        "treated_reg_tokens" and "control_reg_tokens".
     """
     COMPOUND_KEY = "Compound"
-
-    # ------------------------------------------------------------------
-    # Phase 1: collect every image path and record where results go
-    # ------------------------------------------------------------------
-    all_paths: List[str] = []
-    # Each entry: (compound_id, plate_id, role, start_idx, count)
-    manifest: List[tuple] = []
-
-    for compound_entry in metadata:
-        compound_id: str = str(compound_entry[COMPOUND_KEY])
-        plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
-
-        for plate_id in plate_ids:
-            plate_data = compound_entry[plate_id]
-
-            for role in ("treated", "control"):
-                paths: List[str] = plate_data.get(role, [])
-                if paths:
-                    start = len(all_paths)
-                    all_paths.extend(paths)
-                    manifest.append((compound_id, plate_id, role, start, len(paths)))
-
-    if not all_paths:
-        print("[WARN] No images found in metadata.")
-        return {}
-
-    print(f"Total images to encode: {len(all_paths)}")
-
-    # ------------------------------------------------------------------
-    # Phase 2: encode all images in one DataLoader pass
-    # ------------------------------------------------------------------
-    all_features = encode_paths(
-        all_paths, root_dir, model, device, batch_size,
-        transform=transform,
-        return_reg_tokens=return_reg_tokens, use_amp=use_amp,
-        num_workers=num_workers,
-    )  # (N_total, D)
-
-    # ------------------------------------------------------------------
-    # Phase 3: scatter results back into the nested dict
-    # ------------------------------------------------------------------
     result: Dict = {}
 
-    for compound_id, plate_id, role, start, count in manifest:
-        if compound_id not in result:
-            result[compound_id] = {}
-        if plate_id not in result[compound_id]:
-            result[compound_id][plate_id] = {}
+    for compound_entry in tqdm(metadata, desc="Compounds", unit="compound"):
+        compound_id: str = str(compound_entry[COMPOUND_KEY])
+        result[compound_id] = {}
 
-        feats = all_features[start: start + count]  # (count, D)
-        if role == "control":
-            feats = feats.mean(dim=0)  # (D,)
-        result[compound_id][plate_id][role] = feats
+        # All keys that are NOT "Compound" are plate identifiers
+        plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
+
+        for plate_id in tqdm(plate_ids, desc=f"  Compound {compound_id} plates",
+                             leave=False, unit="plate"):
+            plate_data = compound_entry[plate_id]
+
+            treated_paths: List[str] = plate_data.get("treated", [])
+            control_paths: List[str] = plate_data.get("control", [])
+
+            if not treated_paths and not control_paths:
+                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
+                      f"no images found — skipping.")
+                continue
+
+            plate_result: Dict[str, torch.Tensor] = {}
+
+            # ---- Treated: encode each image individually ----
+            if treated_paths:
+                treated_feats = encode_paths(
+                    treated_paths, root_dir, model, device, batch_size,
+                    transform=transform,
+                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
+                )  # (N_treated, D)
+                plate_result["treated"] = treated_feats
+            else:
+                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
+                      f"no treated images.")
+
+            # ---- Control: encode then average ----
+            if control_paths:
+                control_feats = encode_paths(
+                    control_paths, root_dir, model, device, batch_size,
+                    transform=transform,
+                    return_reg_tokens=return_reg_tokens, use_amp=use_amp,
+                )  # (N_control, D)
+                control_avg = control_feats.mean(dim=0)   # (D,)
+                plate_result["control"] = control_avg
+            else:
+                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
+                      f"no control images.")
+
+            result[compound_id][plate_id] = plate_result
 
     return result
 
@@ -615,10 +591,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size", type=int, default=64,
         help="Number of images per forward pass. Default: 64",
-    )
-    parser.add_argument(
-        "--num_workers", type=int, default=4,
-        help="Number of DataLoader workers for parallel image loading. Default: 4",
     )
     parser.add_argument(
         "--no_amp", action="store_true", default=False,
@@ -726,7 +698,6 @@ def main() -> None:
         return_reg_tokens=args.return_reg_tokens,
         use_amp=not args.no_amp,
         transform=transform,
-        num_workers=args.num_workers,
     )
 
     # ------------------------------------------------------------------
