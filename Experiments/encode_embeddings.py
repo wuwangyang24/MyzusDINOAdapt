@@ -124,6 +124,7 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 from torchvision.io import decode_image, ImageReadMode
 from tqdm import tqdm
@@ -197,6 +198,23 @@ class _VAEEncoderWrapper(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _z, mu, _log_var = self.encoder(x)
         return mu
+
+
+class _ImagePathDataset(Dataset):
+    """Lightweight dataset that loads images from a list of relative paths."""
+    def __init__(self, image_paths: List[str], root_dir: Path,
+                 transform: transforms.Compose) -> None:
+        self.image_paths = image_paths
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        full_path = self.root_dir / self.image_paths[idx]
+        img = decode_image(str(full_path), mode=ImageReadMode.RGB)
+        return self.transform(img)
 
 
 # ---------------------------------------------------------------------------
@@ -380,9 +398,12 @@ def encode_paths(
     transform: transforms.Compose = DINO_TRANSFORM,
     return_reg_tokens: bool = False,
     use_amp: bool = True,
+    num_workers: int = 4,
 ) -> torch.Tensor:
     """
     Encode a list of image paths and return a (N, D) float32 CPU tensor.
+
+    Uses a DataLoader with multiple workers for parallel image loading.
 
     Args:
         image_paths: Relative paths from root_dir.
@@ -390,34 +411,30 @@ def encode_paths(
         model:       DINO backbone (eval mode, no grad).
         device:      Torch device.
         batch_size:  Number of images per forward pass.
-        transform:   Torchvision transform applied to each PIL image.
-        return_reg_tokens: If True, also return register tokens via
+        transform:   Torchvision transform applied to each image.
+        return_reg_tokens: If True, return register tokens via
                            DINOv2's ``forward_features`` method.
+        num_workers: Number of DataLoader workers for parallel I/O.
 
     Returns:
-        If return_reg_tokens is False:
-            Tensor of shape (N, D) on CPU  (CLS token features).
-        If return_reg_tokens is True:
-            Tensor of shape (N, D) on CPU  (register tokens averaged
-            over the N_reg dimension per image).
+        Tensor of shape (N, D) on CPU.
     """
+    dataset = _ImagePathDataset(image_paths, root_dir, transform)
+    use_pin = device.type == "cuda"
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=use_pin,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
+    )
+
     all_features: List[torch.Tensor] = []
 
-    for start in range(0, len(image_paths), batch_size):
-        batch_paths = image_paths[start: start + batch_size]
-        batch_tensors: List[torch.Tensor] = []
-
-        for rel_path in batch_paths:
-            full_path = root_dir / rel_path
-            try:
-                img = decode_image(str(full_path), mode=ImageReadMode.RGB)
-                batch_tensors.append(transform(img))
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to load image '{full_path}': {exc}"
-                ) from exc
-
-        batch = torch.stack(batch_tensors, dim=0).to(device)   # (B, 3, 224, 224)
+    for batch in loader:
+        batch = batch.to(device, non_blocking=use_pin)
 
         amp_enabled = use_amp and device.type == "cuda"
         with torch.autocast(device_type=device.type, enabled=amp_enabled):
@@ -447,6 +464,7 @@ def encode_metadata(
     return_reg_tokens: bool = False,
     use_amp: bool = True,
     transform: transforms.Compose = DINO_TRANSFORM,
+    num_workers: int = 4,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -486,6 +504,7 @@ def encode_metadata(
                     treated_paths, root_dir, model, device, batch_size,
                     transform=transform,
                     return_reg_tokens=return_reg_tokens, use_amp=use_amp,
+                    num_workers=num_workers,
                 )  # (N_treated, D)
                 plate_result["treated"] = treated_feats
             else:
@@ -498,6 +517,7 @@ def encode_metadata(
                     control_paths, root_dir, model, device, batch_size,
                     transform=transform,
                     return_reg_tokens=return_reg_tokens, use_amp=use_amp,
+                    num_workers=num_workers,
                 )  # (N_control, D)
                 control_avg = control_feats.mean(dim=0)   # (D,)
                 plate_result["control"] = control_avg
@@ -591,6 +611,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size", type=int, default=64,
         help="Number of images per forward pass. Default: 64",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=4,
+        help="Number of DataLoader workers for parallel image loading. Default: 4",
     )
     parser.add_argument(
         "--no_amp", action="store_true", default=False,
@@ -698,6 +722,7 @@ def main() -> None:
         return_reg_tokens=args.return_reg_tokens,
         use_amp=not args.no_amp,
         transform=transform,
+        num_workers=args.num_workers,
     )
 
     # ------------------------------------------------------------------
