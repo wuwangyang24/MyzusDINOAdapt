@@ -117,6 +117,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import sys
 from pathlib import Path
@@ -453,7 +454,9 @@ def encode_paths(
                 features = model(batch)                        # (B, D)
                 all_features.append(features.float().cpu())
 
-    return torch.cat(all_features, dim=0)                  # (N, D)
+    result = torch.cat(all_features, dim=0)                # (N, D)
+    del all_features
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +536,7 @@ def encode_metadata(
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=pin,
-        persistent_workers=num_workers > 0,
+        persistent_workers=False,
     )
 
     all_features: List[torch.Tensor] = []
@@ -574,6 +577,9 @@ def encode_metadata(
             result[compound_id][plate_id]["treated"] = feats       # (N, D)
         else:
             result[compound_id][plate_id]["control"] = feats.mean(dim=0)  # (D,)
+
+    del all_features_cat  # free the large concatenated tensor
+    gc.collect()
 
     return result
 
@@ -772,6 +778,12 @@ def main() -> None:
         transform=transform,
         num_workers=args.num_workers,
     )
+
+    # Free model memory before saving
+    del model
+    gc.collect()
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
 
     # ------------------------------------------------------------------
     # Save — inject model name into the output filename
