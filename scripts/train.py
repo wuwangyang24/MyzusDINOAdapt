@@ -5,6 +5,7 @@ import json
 import sys
 import torch
 torch.set_float32_matmul_precision('medium')
+torch.multiprocessing.set_sharing_strategy('file_system')
 import pytorch_lightning as pl
 from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
