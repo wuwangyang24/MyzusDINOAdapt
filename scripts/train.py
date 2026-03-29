@@ -338,6 +338,13 @@ def main():
         if not control_emb_path.exists():
             raise FileNotFoundError(f"Control embeddings file not found: {control_emb_path}")
         control_embeddings = torch.load(control_emb_path, map_location="cpu", weights_only=False)
+        # Detach all tensors to ensure no autograd graph is retained
+        for cid in control_embeddings:
+            for pid in control_embeddings[cid]:
+                for key in control_embeddings[cid][pid]:
+                    t = control_embeddings[cid][pid][key]
+                    if isinstance(t, torch.Tensor):
+                        control_embeddings[cid][pid][key] = t.detach().clone()
         logger.info(f"Loaded pre-computed control embeddings from: {control_emb_path}")
 
     # Create datasets

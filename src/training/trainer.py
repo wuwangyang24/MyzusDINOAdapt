@@ -184,7 +184,7 @@ class TripleCheckModule(pl.LightningModule):
                 if kind == 'image':
                     all_feats.append(encoded_feats[data])
                 else:
-                    feat = data.to(self.device)
+                    feat = data.detach().to(self.device)
                     if feat.dim() == 1:
                         feat = feat.unsqueeze(0)  # (D,) -> (1, D)
                     all_feats.append(feat)
@@ -218,10 +218,10 @@ class TripleCheckModule(pl.LightningModule):
         if isinstance(self.loss_fn, TripleCheckBatchLoss):
             loss, align_loss, repel_loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
             if self.training:
-                self.log("train/align_loss", align_loss,
+                self.log("train/align_loss", align_loss.detach(),
                          on_step=True, on_epoch=True, rank_zero_only=True,
                          batch_size=len(compound_indices))
-                self.log("train/repel_loss", repel_loss,
+                self.log("train/repel_loss", repel_loss.detach(),
                          on_step=True, on_epoch=True, rank_zero_only=True,
                          batch_size=len(compound_indices))
         else:
@@ -237,98 +237,99 @@ class TripleCheckModule(pl.LightningModule):
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
         if self.training:
-            all_deltas = torch.cat([deltas_p1_stack, deltas_p2_stack], dim=0)  # (2K, D)
-            delta_norms = all_deltas.float().norm(p=2, dim=1)
-            self.log("diag/delta_norm_mean", delta_norms.mean().item(),
-                     on_step=True, on_epoch=False, rank_zero_only=True,
-                     batch_size=len(compound_indices))
-            self.log("diag/delta_norm_std", delta_norms.std().item(),
-                     on_step=True, on_epoch=False, rank_zero_only=True,
-                     batch_size=len(compound_indices))
+            with torch.no_grad():
+                all_deltas = torch.cat([deltas_p1_stack.detach(), deltas_p2_stack.detach()], dim=0)  # (2K, D)
+                delta_norms = all_deltas.float().norm(p=2, dim=1)
+                self.log("diag/delta_norm_mean", delta_norms.mean().item(),
+                         on_step=True, on_epoch=False, rank_zero_only=True,
+                         batch_size=len(compound_indices))
+                self.log("diag/delta_norm_std", delta_norms.std().item(),
+                         on_step=True, on_epoch=False, rank_zero_only=True,
+                         batch_size=len(compound_indices))
 
-            # Mean norm of treated embeddings across all compounds
-            treated_norms = []
-            for j in range(len(compound_indices)):
-                base = j * 4
-                treated_norms.append(all_feats[base].float().norm(p=2, dim=1).mean().item())
-                treated_norms.append(all_feats[base + 2].float().norm(p=2, dim=1).mean().item())
-            self.log("diag/treated_norm_mean", sum(treated_norms) / len(treated_norms),
-                     on_step=True, on_epoch=False, rank_zero_only=True,
-                     batch_size=len(compound_indices))
-
-            # Per-compound: cosine sim between mean embeddings of the two plates
-            intra_cos_sims = []
-            plate_means = []  # (K, D) — per-compound average of both plate means
-            for j in range(len(compound_indices)):
-                base = j * 4
-                mean_p1 = all_feats[base].float().mean(dim=0)      # (D,)
-                mean_p2 = all_feats[base + 2].float().mean(dim=0)  # (D,)
-                intra_cos_sims.append(
-                    F.cosine_similarity(mean_p1.unsqueeze(0), mean_p2.unsqueeze(0)).item()
-                )
-                plate_means.append((mean_p1 + mean_p2) / 2.0)
-
-            # Per-compound: mean cosine sim of compound avg vs all other compounds' avg
-            inter_cos_sims = []
-            if len(plate_means) > 1:
-                plate_means_stack = torch.stack(plate_means, dim=0)  # (K, D)
-                plate_means_norm = F.normalize(plate_means_stack, dim=-1)
-                cos_matrix = torch.mm(plate_means_norm, plate_means_norm.T)  # (K, K)
+                # Mean norm of treated embeddings across all compounds
+                treated_norms = []
                 for j in range(len(compound_indices)):
-                    mask = torch.ones(len(compound_indices), dtype=torch.bool, device=cos_matrix.device)
-                    mask[j] = False
-                    inter_cos_sims.append(cos_matrix[j][mask].mean().item())
-
-            # ── Delta-based cosine similarities (more informative than raw embeddings) ──
-            # Intra: cos sim between Δ_i1 and Δ_i2 for the same compound
-            intra_delta_cos_sims = F.cosine_similarity(
-                deltas_p1_stack.float(), deltas_p2_stack.float(), dim=-1
-            ).tolist()  # (K,)
-
-            # Inter: cos sim between mean deltas of different compounds
-            inter_delta_cos_sims = []
-            K = deltas_p1_stack.shape[0]
-            if K > 1:
-                mean_deltas = ((deltas_p1_stack + deltas_p2_stack) / 2.0).float()  # (K, D)
-                mean_deltas_norm = F.normalize(mean_deltas, dim=-1)
-                delta_cos_matrix = torch.mm(mean_deltas_norm, mean_deltas_norm.T)  # (K, K)
-                for j in range(K):
-                    mask = torch.ones(K, dtype=torch.bool, device=delta_cos_matrix.device)
-                    mask[j] = False
-                    inter_delta_cos_sims.append(delta_cos_matrix[j][mask].mean().item())
-
-            # Log delta-based metrics via PL (scalars)
-            if intra_delta_cos_sims:
-                self.log("diag/intra_delta_cos_sim_mean",
-                         sum(intra_delta_cos_sims) / len(intra_delta_cos_sims),
-                         on_step=True, on_epoch=False, rank_zero_only=True,
-                         batch_size=len(compound_indices))
-            if inter_delta_cos_sims:
-                self.log("diag/inter_delta_cos_sim_mean",
-                         sum(inter_delta_cos_sims) / len(inter_delta_cos_sims),
+                    base = j * 4
+                    treated_norms.append(all_feats[base].float().norm(p=2, dim=1).mean().item())
+                    treated_norms.append(all_feats[base + 2].float().norm(p=2, dim=1).mean().item())
+                self.log("diag/treated_norm_mean", sum(treated_norms) / len(treated_norms),
                          on_step=True, on_epoch=False, rank_zero_only=True,
                          batch_size=len(compound_indices))
 
-            # Log per-compound treated std as a W&B histogram (vertical distribution)
-            try:
-                import wandb
-                if wandb.run is not None:
-                    log_dict = {
-                        "diag/treated_std_distribution": wandb.Histogram(treated_stds),
-                        "diag/treated_std_mean": sum(treated_stds) / len(treated_stds),
-                        "diag/intra_compound_cos_sim": wandb.Histogram(intra_cos_sims),
-                        "diag/intra_compound_cos_sim_mean": sum(intra_cos_sims) / len(intra_cos_sims),
-                    }
-                    if inter_cos_sims:
-                        log_dict["diag/inter_compound_cos_sim"] = wandb.Histogram(inter_cos_sims)
-                        log_dict["diag/inter_compound_cos_sim_mean"] = sum(inter_cos_sims) / len(inter_cos_sims)
-                    # Delta-based histograms
-                    log_dict["diag/intra_delta_cos_sim"] = wandb.Histogram(intra_delta_cos_sims)
-                    if inter_delta_cos_sims:
-                        log_dict["diag/inter_delta_cos_sim"] = wandb.Histogram(inter_delta_cos_sims)
-                    wandb.log(log_dict, commit=False)
-            except ImportError:
-                pass
+                # Per-compound: cosine sim between mean embeddings of the two plates
+                intra_cos_sims = []
+                plate_means = []  # (K, D) — per-compound average of both plate means
+                for j in range(len(compound_indices)):
+                    base = j * 4
+                    mean_p1 = all_feats[base].float().mean(dim=0)      # (D,)
+                    mean_p2 = all_feats[base + 2].float().mean(dim=0)  # (D,)
+                    intra_cos_sims.append(
+                        F.cosine_similarity(mean_p1.unsqueeze(0), mean_p2.unsqueeze(0)).item()
+                    )
+                    plate_means.append((mean_p1 + mean_p2) / 2.0)
+
+                # Per-compound: mean cosine sim of compound avg vs all other compounds' avg
+                inter_cos_sims = []
+                if len(plate_means) > 1:
+                    plate_means_stack = torch.stack(plate_means, dim=0)  # (K, D)
+                    plate_means_norm = F.normalize(plate_means_stack, dim=-1)
+                    cos_matrix = torch.mm(plate_means_norm, plate_means_norm.T)  # (K, K)
+                    for j in range(len(compound_indices)):
+                        mask = torch.ones(len(compound_indices), dtype=torch.bool, device=cos_matrix.device)
+                        mask[j] = False
+                        inter_cos_sims.append(cos_matrix[j][mask].mean().item())
+
+                # ── Delta-based cosine similarities (more informative than raw embeddings) ──
+                # Intra: cos sim between Δ_i1 and Δ_i2 for the same compound
+                intra_delta_cos_sims = F.cosine_similarity(
+                    deltas_p1_stack.float(), deltas_p2_stack.float(), dim=-1
+                ).tolist()  # (K,)
+
+                # Inter: cos sim between mean deltas of different compounds
+                inter_delta_cos_sims = []
+                K = deltas_p1_stack.shape[0]
+                if K > 1:
+                    mean_deltas = ((deltas_p1_stack + deltas_p2_stack) / 2.0).float()  # (K, D)
+                    mean_deltas_norm = F.normalize(mean_deltas, dim=-1)
+                    delta_cos_matrix = torch.mm(mean_deltas_norm, mean_deltas_norm.T)  # (K, K)
+                    for j in range(K):
+                        mask = torch.ones(K, dtype=torch.bool, device=delta_cos_matrix.device)
+                        mask[j] = False
+                        inter_delta_cos_sims.append(delta_cos_matrix[j][mask].mean().item())
+
+                # Log delta-based metrics via PL (scalars)
+                if intra_delta_cos_sims:
+                    self.log("diag/intra_delta_cos_sim_mean",
+                             sum(intra_delta_cos_sims) / len(intra_delta_cos_sims),
+                             on_step=True, on_epoch=False, rank_zero_only=True,
+                             batch_size=len(compound_indices))
+                if inter_delta_cos_sims:
+                    self.log("diag/inter_delta_cos_sim_mean",
+                             sum(inter_delta_cos_sims) / len(inter_delta_cos_sims),
+                             on_step=True, on_epoch=False, rank_zero_only=True,
+                             batch_size=len(compound_indices))
+
+                # Log per-compound treated std as a W&B histogram (vertical distribution)
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        log_dict = {
+                            "diag/treated_std_distribution": wandb.Histogram(treated_stds),
+                            "diag/treated_std_mean": sum(treated_stds) / len(treated_stds),
+                            "diag/intra_compound_cos_sim": wandb.Histogram(intra_cos_sims),
+                            "diag/intra_compound_cos_sim_mean": sum(intra_cos_sims) / len(intra_cos_sims),
+                        }
+                        if inter_cos_sims:
+                            log_dict["diag/inter_compound_cos_sim"] = wandb.Histogram(inter_cos_sims)
+                            log_dict["diag/inter_compound_cos_sim_mean"] = sum(inter_cos_sims) / len(inter_cos_sims)
+                        # Delta-based histograms
+                        log_dict["diag/intra_delta_cos_sim"] = wandb.Histogram(intra_delta_cos_sims)
+                        if inter_delta_cos_sims:
+                            log_dict["diag/inter_delta_cos_sim"] = wandb.Histogram(inter_delta_cos_sims)
+                        wandb.log(log_dict, commit=False)
+                except ImportError:
+                    pass
 
         return loss
 
@@ -351,13 +352,11 @@ class TripleCheckModule(pl.LightningModule):
         return loss
 
     def on_after_backward(self):
-        """Log gradient norms (frequency controlled by Trainer's log_every_n_steps)."""
+        """Log total gradient norm (frequency controlled by Trainer's log_every_n_steps)."""
         grad_norm_total = 0.0
-        for name, param in self.model.named_parameters():
+        for param in self.model.parameters():
             if param.requires_grad and param.grad is not None:
-                grad_norm = param.grad.norm(2).item()
-                grad_norm_total += grad_norm ** 2
-                self.log(f"grad_norm/{name}", grad_norm, on_step=True, on_epoch=False, rank_zero_only=True, batch_size=1)
+                grad_norm_total += param.grad.norm(2).item() ** 2
         self.log("grad_norm/total", grad_norm_total ** 0.5, on_step=True, on_epoch=False, prog_bar=True, rank_zero_only=True, batch_size=1)
 
     def validation_step(self, batch, batch_idx):
