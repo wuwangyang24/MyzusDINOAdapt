@@ -237,7 +237,10 @@ class CompoundPlateDataset(Dataset):
         full_path = self.root_dir / image_path
         if not full_path.exists():
             raise FileNotFoundError(f"Image not found: {full_path}")
-        image = Image.open(full_path).convert('RGB')
+        img = Image.open(full_path)
+        img.load()  # Force full read into memory
+        image = img.convert('RGB')
+        img.close()  # Release file handle
         return image
 
 
