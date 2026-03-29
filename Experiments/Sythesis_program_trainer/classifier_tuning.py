@@ -52,7 +52,7 @@ def _tune_xgboost(
 
     print(f"\nXGBoost hyperparameter tuning ({n_trials} trials) ...")
 
-    best_f1 = -1.0
+    best_acc = -1.0
     best_params = {}
     results = []
 
@@ -90,9 +90,9 @@ def _tune_xgboost(
         trial_acc = balanced_accuracy_score(y_val, val_preds)
 
         results.append({**config, "f1": trial_f1, "balanced_acc": trial_acc})
-        is_best = trial_f1 > best_f1
+        is_best = trial_acc > best_acc
         if is_best:
-            best_f1 = trial_f1
+            best_acc = trial_acc
             best_params = dict(config)
 
         print(f"  Trial {trial+1:3d}/{n_trials}  depth={config['max_depth']}  "
@@ -101,10 +101,10 @@ def _tune_xgboost(
               f"gamma={config['gamma']:.1f}  lambda={config['reg_lambda']:.1f}  "
               f"F1={trial_f1:.4f}  Acc={trial_acc:.4f}{'  ★ BEST' if is_best else ''}")
 
-    print(f"\n  Best trial F1: {best_f1:.4f}")
+    print(f"\n  Best trial Acc: {best_acc:.4f}")
     print(f"  Best params: {best_params}")
 
-    results_df = pd.DataFrame(results).sort_values("f1", ascending=False)
+    results_df = pd.DataFrame(results).sort_values("balanced_acc", ascending=False)
     print(f"\n  Top 5 configs:")
     print(results_df.head().to_string(index=False))
 
@@ -143,7 +143,7 @@ def _tune_catboost(
 
     print(f"\nCatBoost hyperparameter tuning ({n_trials} trials) ...")
 
-    best_f1 = -1.0
+    best_acc = -1.0
     best_params = {}
     results = []
 
@@ -175,9 +175,9 @@ def _tune_catboost(
         trial_acc = balanced_accuracy_score(y_val, val_preds)
 
         results.append({**config, "f1": trial_f1, "balanced_acc": trial_acc})
-        is_best = trial_f1 > best_f1
+        is_best = trial_acc > best_acc
         if is_best:
-            best_f1 = trial_f1
+            best_acc = trial_acc
             best_params = dict(config)
 
         print(f"  Trial {trial+1:3d}/{n_trials}  depth={config['depth']}  "
@@ -185,10 +185,10 @@ def _tune_catboost(
               f"cw={config['auto_class_weights']:<12s}  "
               f"F1={trial_f1:.4f}  Acc={trial_acc:.4f}{'  ★ BEST' if is_best else ''}")
 
-    print(f"\n  Best trial F1: {best_f1:.4f}")
+    print(f"\n  Best trial Acc: {best_acc:.4f}")
     print(f"  Best params: {best_params}")
 
-    results_df = pd.DataFrame(results).sort_values("f1", ascending=False)
+    results_df = pd.DataFrame(results).sort_values("balanced_acc", ascending=False)
     print(f"\n  Top 5 configs:")
     print(results_df.head().to_string(index=False))
 
