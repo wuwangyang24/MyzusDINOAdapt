@@ -525,6 +525,8 @@ def main():
     lr = config["training"]["learning_rate"]
     lr_str = f"{lr:.0e}" if lr < 0.001 else f"{lr:g}"
     ckpt_tag = f"{backbone}_{adaptation_method}_r{r}a{alpha_str}-T{args.repulsion_temperature}-LR{lr_str}"
+    if args.control_embeddings:
+        ckpt_tag += "_PreCon"
     if config[adaptation_method].get("train_layernorm", False):
         ckpt_tag += "_LN"
     ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
