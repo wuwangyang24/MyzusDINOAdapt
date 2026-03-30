@@ -409,7 +409,7 @@ def main():
             num_workers=num_workers,
             sampler=train_sampler,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=False,
             prefetch_factor=prefetch,
             collate_fn=compound_collate_fn,
         )
@@ -420,7 +420,7 @@ def main():
             num_workers=num_workers,
             shuffle=True,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=False,
             prefetch_factor=prefetch,
             collate_fn=compound_collate_fn,
         )
@@ -447,7 +447,7 @@ def main():
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=False,
             prefetch_factor=prefetch,
             collate_fn=compound_collate_fn,
         )
@@ -470,7 +470,7 @@ def main():
             num_workers=num_workers,
             shuffle=False,
             pin_memory=torch.cuda.is_available(),
-            persistent_workers=num_workers > 0,
+            persistent_workers=False,
             prefetch_factor=prefetch,
             collate_fn=compound_collate_fn,
         )
