@@ -114,6 +114,16 @@ Usage:
         --model_type     custom_vae \\
         --vae_checkpoint /path/to/tiltedvae2.ckpt \\
         --vae_latent_dim 100
+
+    # Re-use pre-encoded control embeddings (skip encoding controls)
+    python encode_embeddings.py \\
+        --metadata            /path/to/metadata.json \\
+        --root_dir            /path/to/images \\
+        --output              /path/to/embeddings.pt \\
+        --backbone            dinov2_vitb14 \\
+        --model_type          dino_lora \\
+        --weights_path        /path/to/lora_checkpoint.pt \\
+        --control_embeddings  /path/to/precomputed_embeddings.pt
 """
 
 import argparse
@@ -473,6 +483,7 @@ def encode_metadata(
     use_amp: bool = True,
     transform: transforms.Compose = DINO_TRANSFORM,
     num_workers: int = 4,
+    control_embeddings: Optional[Dict] = None,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -480,6 +491,10 @@ def encode_metadata(
     Collects all image paths up-front and encodes them in a single
     DataLoader pass for maximum throughput, then slices the features
     back into the per-compound / per-plate structure.
+
+    When *control_embeddings* is provided (a dict loaded from a previous
+    encoding run), control images are **not** re-encoded; instead the
+    pre-computed control vectors are copied directly into the output.
 
     Returns:
         Nested dict: compound_id -> plate_id -> {"treated": Tensor, "control": Tensor}
@@ -516,12 +531,22 @@ def encode_metadata(
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
                       f"no treated images.")
 
-            if control_paths:
+            # When pre-encoded controls are available, skip encoding
+            has_precomputed_ctrl = (
+                control_embeddings is not None
+                and compound_id in control_embeddings
+                and plate_id in control_embeddings[compound_id]
+                and "control" in control_embeddings[compound_id][plate_id]
+            )
+
+            if has_precomputed_ctrl:
+                pass  # will be injected in Phase 3
+            elif control_paths:
                 segments.append((compound_id, plate_id, "control", len(control_paths)))
                 all_paths.extend(control_paths)
             else:
                 print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no control images.")
+                      f"no control images (and no pre-encoded controls).")
 
     if not all_paths:
         return {}
@@ -579,6 +604,29 @@ def encode_metadata(
             result[compound_id][plate_id]["control"] = feats.mean(dim=0)  # (D,)
 
     del all_features_cat  # free the large concatenated tensor
+
+    # Inject pre-encoded control embeddings
+    if control_embeddings is not None:
+        n_injected = 0
+        for compound_entry in metadata:
+            compound_id = str(compound_entry[COMPOUND_KEY])
+            plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
+            for plate_id in plate_ids:
+                if (
+                    compound_id in control_embeddings
+                    and plate_id in control_embeddings[compound_id]
+                    and "control" in control_embeddings[compound_id][plate_id]
+                ):
+                    if compound_id not in result:
+                        result[compound_id] = {}
+                    if plate_id not in result[compound_id]:
+                        result[compound_id][plate_id] = {}
+                    result[compound_id][plate_id]["control"] = (
+                        control_embeddings[compound_id][plate_id]["control"]
+                    )
+                    n_injected += 1
+        print(f"  ✓ Injected {n_injected} pre-encoded control embeddings.")
+
     gc.collect()
 
     return result
@@ -655,6 +703,14 @@ def parse_args() -> argparse.Namespace:
     vae_grp.add_argument(
         "--vae_latent_dim", type=int, default=100,
         help="Latent dimension of the VAE encoder. Default: 100",
+    )
+
+    # ---- Pre-encoded controls ----
+    parser.add_argument(
+        "--control_embeddings", type=str, default=None,
+        help="Path to a .pt file with pre-encoded control embeddings. "
+             "When provided, control images are not re-encoded; the "
+             "pre-computed vectors are used directly.",
     )
 
     # ---- Misc ----
@@ -760,6 +816,19 @@ def main() -> None:
             )
 
     # ------------------------------------------------------------------
+    # Load pre-encoded control embeddings (if provided)
+    # ------------------------------------------------------------------
+    ctrl_emb = None
+    if args.control_embeddings:
+        ctrl_path = Path(args.control_embeddings)
+        if not ctrl_path.exists():
+            raise FileNotFoundError(
+                f"Control embeddings file not found: {ctrl_path}"
+            )
+        ctrl_emb = torch.load(ctrl_path, map_location="cpu", weights_only=False)
+        print(f"Loaded pre-encoded control embeddings from: {ctrl_path}")
+
+    # ------------------------------------------------------------------
     # Select transform
     # ------------------------------------------------------------------
     transform = VAE_TRANSFORM if args.model_type == "custom_vae" else DINO_TRANSFORM
@@ -777,6 +846,7 @@ def main() -> None:
         use_amp=not args.no_amp,
         transform=transform,
         num_workers=args.num_workers,
+        control_embeddings=ctrl_emb,
     )
 
     # Free model memory before saving
