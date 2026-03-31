@@ -270,11 +270,14 @@ def _load_and_merge_metadata(metadata_paths, logger):
                         existing[key] = value
                     else:
                         n_duplicate_plates += 1
-                        # Same plate in both files — concatenate image lists
-                        for role in ("treated", "control"):
-                            prev = existing[key].get(role, [])
-                            new = value.get(role, [])
-                            existing[key][role] = prev + new
+                        # Same plate in both files — keep as separate plate
+                        # with a disambiguating suffix
+                        suffix = 2
+                        new_key = f"{key}_{suffix}"
+                        while new_key in existing:
+                            suffix += 1
+                            new_key = f"{key}_{suffix}"
+                        existing[new_key] = value
 
     all_compounds = list(merged.values())
     logger.info(f"Merged metadata: {len(all_compounds)} unique compounds "
