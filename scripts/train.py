@@ -242,6 +242,8 @@ def _load_and_merge_metadata(metadata_paths, logger):
     separately) so no data is silently dropped.
     """
     merged: dict = {}  # compound_id -> compound dict
+    n_duplicate_compounds = 0
+    n_duplicate_plates = 0
 
     for path_str in metadata_paths:
         meta_path = Path(path_str)
@@ -258,6 +260,7 @@ def _load_and_merge_metadata(metadata_paths, logger):
                 merged[cid] = dict(entry)
                 merged[cid]["Compound"] = cid
             else:
+                n_duplicate_compounds += 1
                 # Merge plate entries
                 existing = merged[cid]
                 for key, value in entry.items():
@@ -266,6 +269,7 @@ def _load_and_merge_metadata(metadata_paths, logger):
                     if key not in existing:
                         existing[key] = value
                     else:
+                        n_duplicate_plates += 1
                         # Same plate in both files — concatenate image lists
                         for role in ("treated", "control"):
                             prev = existing[key].get(role, [])
@@ -275,6 +279,9 @@ def _load_and_merge_metadata(metadata_paths, logger):
     all_compounds = list(merged.values())
     logger.info(f"Merged metadata: {len(all_compounds)} unique compounds "
                 f"from {len(metadata_paths)} file(s)")
+    if n_duplicate_compounds > 0:
+        logger.info(f"  Overlapping compounds: {n_duplicate_compounds}, "
+                     f"overlapping plates: {n_duplicate_plates}")
     return all_compounds
 
 
