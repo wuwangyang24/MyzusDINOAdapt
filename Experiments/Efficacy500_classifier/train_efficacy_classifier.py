@@ -264,6 +264,7 @@ def parse_args() -> argparse.Namespace:
         help="Output directory (default: Experiments/runs/EFFICACY_CLASSIFIER)",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
+    p.add_argument("--gpu_id", type=int, default=0, help="CUDA device ID to use (default: 0)")
 
     return p.parse_args()
 
@@ -459,7 +460,7 @@ def _run_xgboost(
             eval_metric="auc",
             use_label_encoder=False,
             random_state=args.seed,
-            device="cuda" if torch.cuda.is_available() else "cpu",
+            device=f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu",
             early_stopping_rounds=args.xgb_early_stopping,
         )
         fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
@@ -481,7 +482,7 @@ def _run_xgboost(
         objective="binary:logistic",
         use_label_encoder=False,
         random_state=args.seed,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        device=f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu",
         early_stopping_rounds=args.xgb_early_stopping,
     )
     print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
@@ -578,6 +579,7 @@ def _run_catboost(
             random_seed=args.seed,
             verbose=0,
             task_type="GPU" if torch.cuda.is_available() else "CPU",
+            devices=str(args.gpu_id) if torch.cuda.is_available() else None,
             early_stopping_rounds=args.cb_early_stopping,
         )
         fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
@@ -601,6 +603,7 @@ def _run_catboost(
         random_seed=args.seed,
         verbose=500,
         task_type="GPU" if torch.cuda.is_available() else "CPU",
+        devices=str(args.gpu_id) if torch.cuda.is_available() else None,
         early_stopping_rounds=args.cb_early_stopping,
     )
     print(f"\nTraining final CatBoost on all {X_train.shape[0]} training compounds ...")
@@ -629,7 +632,7 @@ def main() -> None:
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{args.gpu_id}" if torch.cuda.is_available() else "cpu")
 
     subtract_suffix = "subtract_control" if args.subtract_control else "no_subtract"
     output_dir = Path(args.output_dir) / args.model_name / args.classifier / subtract_suffix
