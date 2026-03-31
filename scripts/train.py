@@ -70,8 +70,10 @@ def parse_args():
     parser.add_argument(
         "--metadata",
         type=str,
-        default="metadata.json",
-        help="Path to metadata JSON file (relative to data-dir, or absolute)"
+        nargs="+",
+        default=["metadata.json"],
+        help="Path(s) to metadata JSON file(s). Multiple files are merged; "
+             "overlapping compound IDs have their plates combined."
     )
     parser.add_argument(
         "--val-data-dir",
@@ -231,6 +233,51 @@ def parse_args():
     return parser.parse_args()
 
 
+def _load_and_merge_metadata(metadata_paths, logger):
+    """Load one or more metadata JSON files and merge by compound ID.
+
+    When the same Compound ID appears in multiple files, plate entries
+    are combined into a single compound dict.  If the same plate key
+    exists in both, the image lists are concatenated (treated/control
+    separately) so no data is silently dropped.
+    """
+    merged: dict = {}  # compound_id -> compound dict
+
+    for path_str in metadata_paths:
+        meta_path = Path(path_str)
+        if not meta_path.exists():
+            raise FileNotFoundError(f"Metadata file not found: {meta_path}")
+        with open(meta_path, "r") as f:
+            raw = json.load(f)
+        compounds = raw if isinstance(raw, list) else raw.get("compounds", [])
+        logger.info(f"Loaded {len(compounds)} compounds from {meta_path}")
+
+        for entry in compounds:
+            cid = str(entry["Compound"])
+            if cid not in merged:
+                merged[cid] = dict(entry)
+                merged[cid]["Compound"] = cid
+            else:
+                # Merge plate entries
+                existing = merged[cid]
+                for key, value in entry.items():
+                    if key == "Compound":
+                        continue
+                    if key not in existing:
+                        existing[key] = value
+                    else:
+                        # Same plate in both files — concatenate image lists
+                        for role in ("treated", "control"):
+                            prev = existing[key].get(role, [])
+                            new = value.get(role, [])
+                            existing[key][role] = prev + new
+
+    all_compounds = list(merged.values())
+    logger.info(f"Merged metadata: {len(all_compounds)} unique compounds "
+                f"from {len(metadata_paths)} file(s)")
+    return all_compounds
+
+
 def main():
     """Main training function."""
     args = parse_args()
@@ -325,7 +372,7 @@ def main():
     # Resolve paths relative to data-root-dir
     if args.data_root_dir:
         args.data_dir = str(Path(args.data_root_dir) / args.data_dir)
-        args.metadata = str(Path(args.data_root_dir) / args.metadata)
+        args.metadata = [str(Path(args.data_root_dir) / m) for m in args.metadata]
     
     # root_dir for image loading is data-root-dir (not data-dir)
     # since metadata paths already include the subdirectory
@@ -355,11 +402,8 @@ def main():
         is_train=True
     )
 
-    # Load and pre-filter compounds with >= 2 valid plates
-    metadata_path = Path(args.metadata)
-    with open(metadata_path, 'r') as f:
-        raw_metadata = json.load(f)
-    all_compounds = raw_metadata if isinstance(raw_metadata, list) else raw_metadata.get("compounds", [])
+    # Load and merge metadata from all files
+    all_compounds = _load_and_merge_metadata(args.metadata, logger)
     before = len(all_compounds)
     all_compounds = [
         c for c in all_compounds
@@ -388,7 +432,7 @@ def main():
 
     train_dataset = CompoundPlateDataset(
         root_dir=image_root_dir,
-        metadata_file=args.metadata,
+        metadata_file=args.metadata[0],
         transform=transform,
         compounds_list=train_compounds,
         num_plates=2,
@@ -434,7 +478,7 @@ def main():
         )
         val_dataset = CompoundPlateDataset(
             root_dir=image_root_dir,
-            metadata_file=args.metadata,
+            metadata_file=args.metadata[0],
             transform=val_transform,
             compounds_list=val_compounds,
             num_plates=2,
