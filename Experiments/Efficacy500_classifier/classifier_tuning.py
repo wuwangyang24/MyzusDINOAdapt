@@ -285,7 +285,6 @@ def tune_catboost(
         "depth": [4, 6, 8, 10],
         "learning_rate": [0.01, 0.03, 0.05, 0.1],
         "l2_leaf_reg": [1.0, 3.0, 5.0, 7.0],
-        "subsample": [0.7, 0.8, 1.0],
         "rsm": [0.7, 0.8, 1.0],
     }
 
