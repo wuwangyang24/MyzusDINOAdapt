@@ -531,7 +531,8 @@ def _run_catboost(
         depth=args.cb_depth,
         learning_rate=args.cb_learning_rate,
         l2_leaf_reg=args.cb_l2_leaf_reg,
-        subsample=args.cb_subsample,
+        # bootstrap_type="MVS",
+        # subsample=args.cb_subsample,
         rsm=args.cb_rsm,
     )
 
