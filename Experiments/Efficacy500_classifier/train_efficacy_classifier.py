@@ -533,7 +533,7 @@ def _run_catboost(
         l2_leaf_reg=args.cb_l2_leaf_reg,
         # bootstrap_type="MVS",
         # subsample=args.cb_subsample,
-        rsm=args.cb_rsm,
+        # rsm=args.cb_rsm,
     )
 
     # ── Optionally use scale_pos_weight ──────────────────────────────────
