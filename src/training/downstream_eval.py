@@ -178,10 +178,16 @@ class DownstreamEvalCallback(pl.Callback):
             self._train_control_embeddings = torch.load(
                 self._train_control_embeddings_path, map_location="cpu", weights_only=False,
             )
+            n_cids = len(self._train_control_embeddings)
+            print(f"  [DownstreamEval] Loaded train control embeddings: "
+                  f"{n_cids} compounds from {self._train_control_embeddings_path}")
         if self._inf_control_embeddings_path is not None:
             self._inf_control_embeddings = torch.load(
                 self._inf_control_embeddings_path, map_location="cpu", weights_only=False,
             )
+            n_cids = len(self._inf_control_embeddings)
+            print(f"  [DownstreamEval] Loaded inf control embeddings: "
+                  f"{n_cids} compounds from {self._inf_control_embeddings_path}")
 
     # ------------------------------------------------------------------
     # Hook
