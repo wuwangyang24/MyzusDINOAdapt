@@ -119,6 +119,7 @@ class DownstreamEvalCallback(pl.Callback):
         self._inf_control_embeddings: Optional[Dict] = None
         self._train_control_embeddings_path = train_control_embeddings_path
         self._inf_control_embeddings_path = inf_control_embeddings_path
+        self._compiled_model: Optional[torch.nn.Module] = None
 
     # ------------------------------------------------------------------
     # Lazy loaders (run once)
@@ -233,12 +234,17 @@ class DownstreamEvalCallback(pl.Callback):
         model.eval()
         device = pl_module.device
 
+        # Compile once for faster encoding; reuses current weights each call
+        if self._compiled_model is None and device.type == "cuda":
+            self._compiled_model = torch.compile(model)
+        eval_model = self._compiled_model if self._compiled_model is not None else model
+
         try:
             # Encode training embeddings
             train_embeddings = encode_metadata(
                 metadata=self._train_metadata,
                 root_dir=self.train_root_dir,
-                model=model,
+                model=eval_model,
                 device=device,
                 batch_size=self.encode_batch_size,
                 return_reg_tokens=False,
@@ -252,7 +258,7 @@ class DownstreamEvalCallback(pl.Callback):
             inf_embeddings = encode_metadata(
                 metadata=self._inference_metadata,
                 root_dir=self.inference_root_dir,
-                model=model,
+                model=eval_model,
                 device=device,
                 batch_size=self.encode_batch_size,
                 return_reg_tokens=False,
