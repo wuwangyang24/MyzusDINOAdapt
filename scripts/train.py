@@ -736,6 +736,7 @@ def main():
             train_control_embeddings_path=args.downstream_train_control_embeddings,
             inf_control_embeddings_path=args.downstream_inf_control_embeddings,
             scale_pos_weight=args.downstream_scale_pos_weight,
+            ckpt_dir=str(ckpt_subdir),
         )
         callbacks.append(downstream_cb)
         logger.info(f"Downstream eval enabled: every {args.downstream_eval_every} steps")

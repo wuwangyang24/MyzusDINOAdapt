@@ -69,6 +69,8 @@ class DownstreamEvalCallback(pl.Callback):
         Path to pre-computed control embeddings .pt for inference data (optional).
     scale_pos_weight : bool
         Use scale_pos_weight=n_neg/n_pos in XGBoost to handle class imbalance.
+    ckpt_dir : str or None
+        Directory to save the best-AUROC checkpoint. If None, no checkpoint is saved.
     """
 
     def __init__(
@@ -88,6 +90,7 @@ class DownstreamEvalCallback(pl.Callback):
         train_control_embeddings_path: Optional[str] = None,
         inf_control_embeddings_path: Optional[str] = None,
         scale_pos_weight: bool = False,
+        ckpt_dir: Optional[str] = None,
     ):
         super().__init__()
         if not _HAS_XGBOOST:
@@ -109,6 +112,8 @@ class DownstreamEvalCallback(pl.Callback):
         self.encode_batch_size = encode_batch_size
         self.encode_num_workers = encode_num_workers
         self.scale_pos_weight = scale_pos_weight
+        self.ckpt_dir = Path(ckpt_dir) if ckpt_dir is not None else None
+        self.best_auroc = -1.0
 
         # Lazy-loaded on first evaluation
         self._train_metadata: Optional[List[Dict]] = None
@@ -219,7 +224,18 @@ class DownstreamEvalCallback(pl.Callback):
         except ImportError:
             pass
 
-        print(f"  [DownstreamEval] step={step}  AUROC={auroc:.4f}  "
+        # Save checkpoint if this is the best AUROC so far
+        is_best = auroc > self.best_auroc
+        if is_best:
+            self.best_auroc = auroc
+            if self.ckpt_dir is not None:
+                self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+                ckpt_path = self.ckpt_dir / "best_auroc.ckpt"
+                trainer.save_checkpoint(str(ckpt_path))
+                print(f"  [DownstreamEval] New best AUROC={auroc:.4f} — saved {ckpt_path}")
+
+        best_tag = " (best)" if is_best else ""
+        print(f"  [DownstreamEval] step={step}  AUROC={auroc:.4f}{best_tag}  "
               f"BalAcc={bal_acc:.4f}  F1={f1:.4f}")
 
     # ------------------------------------------------------------------
