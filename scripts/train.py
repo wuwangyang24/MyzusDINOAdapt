@@ -229,6 +229,11 @@ def parse_args():
              "When set, control features are loaded from this file "
              "instead of being encoded by the backbone during training.",
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Apply torch.compile to the model for faster training (requires PyTorch 2.0+).",
+    )
 
     # ── Downstream efficacy evaluation during training ───────────────
     ds = parser.add_argument_group("Downstream eval (periodic efficacy classification)")
@@ -469,6 +474,11 @@ def main():
         raise ValueError(f"Unknown adaptation method: {adaptation_method}")
 
     logger.info("Model created successfully")
+
+    # Optionally compile the model for faster training
+    if getattr(args, 'compile', False):
+        model = torch.compile(model)
+        logger.info("Model compiled with torch.compile")
 
     # Resolve paths relative to data-root-dir
     if args.data_root_dir:
