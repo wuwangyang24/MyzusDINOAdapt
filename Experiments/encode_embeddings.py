@@ -520,8 +520,6 @@ def encode_metadata(
             control_paths: List[str] = plate_data.get("control", [])
 
             if not treated_paths and not control_paths:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no images found — skipping.")
                 continue
 
             if treated_paths:
