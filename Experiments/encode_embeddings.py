@@ -568,7 +568,8 @@ def encode_metadata(
     amp_enabled = use_amp and device.type == "cuda"
 
     with torch.no_grad():
-        for batch_tensor in tqdm(loader, desc="Encoding", unit="batch"):
+        for batch_tensor in tqdm(loader, desc="Encoding", unit="batch",
+                                   dynamic_ncols=True, position=0, leave=True):
             batch_tensor = batch_tensor.to(device, non_blocking=pin)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
                 if return_reg_tokens:
