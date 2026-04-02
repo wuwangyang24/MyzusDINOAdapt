@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 import torch
 import pytorch_lightning as pl
 
@@ -205,10 +206,16 @@ class DownstreamEvalCallback(pl.Callback):
         self._ensure_loaded()
 
         try:
-            auroc, bal_acc, f1 = self._evaluate(pl_module)
+            auroc, bal_acc, f1, pred_df = self._evaluate(pl_module)
         except Exception as e:
             warnings.warn(f"[DownstreamEval] Evaluation failed at step {step}: {e}")
             return
+
+        # Save predictions CSV
+        if self.ckpt_dir is not None and pred_df is not None:
+            self.ckpt_dir.mkdir(parents=True, exist_ok=True)
+            csv_path = self.ckpt_dir / f"downstream_preds_step{step}.csv"
+            pred_df.to_csv(csv_path, index=False)
 
         # Log to all PL loggers (TensorBoard, W&B, etc.)
         pl_module.log("downstream/auroc", auroc, on_step=True, on_epoch=False,
@@ -295,7 +302,7 @@ class DownstreamEvalCallback(pl.Callback):
                 train_embeddings, self._cid2label,
                 self.subtract_control, self.normalize_before_subtract,
             )
-            X_inf, y_inf, _ = build_mean_latent_features(
+            X_inf, y_inf, inf_cids = build_mean_latent_features(
                 inf_embeddings, self._inf_cid2label,
                 self.subtract_control, self.normalize_before_subtract,
             )
@@ -332,6 +339,14 @@ class DownstreamEvalCallback(pl.Callback):
             bal_acc = balanced_accuracy_score(y_inf, inf_preds)
             f1 = f1_score(y_inf, inf_preds, average="weighted", zero_division=0)
 
+            # Build predictions dataframe
+            pred_df = pd.DataFrame({
+                "compound_id": inf_cids,
+                "true_label": y_inf,
+                "pred_label": inf_preds,
+                "pred_proba": inf_proba,
+            })
+
         finally:
             # Restore model training state
             if was_training:
@@ -341,4 +356,4 @@ class DownstreamEvalCallback(pl.Callback):
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        return auroc, bal_acc, f1
+        return auroc, bal_acc, f1, pred_df
