@@ -569,7 +569,7 @@ def encode_metadata(
 
     with torch.no_grad():
         for batch_tensor in tqdm(loader, desc="Encoding", unit="batch",
-                                   file=sys.stderr, mininterval=2.0,
+                                   file=sys.stderr, mininterval=300,
                                    dynamic_ncols=True, ncols=80):
             batch_tensor = batch_tensor.to(device, non_blocking=pin)
             with torch.autocast(device_type=device.type, enabled=amp_enabled):
