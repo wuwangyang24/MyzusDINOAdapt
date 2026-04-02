@@ -525,9 +525,6 @@ def encode_metadata(
             if treated_paths:
                 segments.append((compound_id, plate_id, "treated", len(treated_paths)))
                 all_paths.extend(treated_paths)
-            else:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no treated images.")
 
             # When pre-encoded controls are available, skip encoding
             has_precomputed_ctrl = (
