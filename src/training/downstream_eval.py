@@ -120,6 +120,25 @@ class DownstreamEvalCallback(pl.Callback):
         if self._train_metadata is not None:
             return
 
+        # Validate that all required files exist
+        required_files = {
+            "train_metadata": self.train_metadata_path,
+            "train_root_dir": self.train_root_dir,
+            "train_efficacy": self.train_efficacy_path,
+            "inference_metadata": self.inference_metadata_path,
+            "inference_root_dir": self.inference_root_dir,
+            "inference_efficacy": self.inference_efficacy_path,
+        }
+        if self._control_embeddings_path is not None:
+            required_files["control_embeddings"] = self._control_embeddings_path
+
+        missing = [name for name, path in required_files.items() if not Path(path).exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"[DownstreamEval] Missing files/directories: "
+                + ", ".join(f"{name}={required_files[name]}" for name in missing)
+            )
+
         # Training metadata
         with open(self.train_metadata_path, "r") as f:
             raw = json.load(f)
