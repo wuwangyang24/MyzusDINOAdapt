@@ -67,6 +67,8 @@ class DownstreamEvalCallback(pl.Callback):
         Path to pre-computed control embeddings .pt for training data (optional).
     inf_control_embeddings_path : str or None
         Path to pre-computed control embeddings .pt for inference data (optional).
+    scale_pos_weight : bool
+        Use scale_pos_weight=n_neg/n_pos in XGBoost to handle class imbalance.
     """
 
     def __init__(
@@ -85,6 +87,7 @@ class DownstreamEvalCallback(pl.Callback):
         encode_num_workers: int = 4,
         train_control_embeddings_path: Optional[str] = None,
         inf_control_embeddings_path: Optional[str] = None,
+        scale_pos_weight: bool = False,
     ):
         super().__init__()
         if not _HAS_XGBOOST:
@@ -105,6 +108,7 @@ class DownstreamEvalCallback(pl.Callback):
         self.normalize_before_subtract = normalize_before_subtract
         self.encode_batch_size = encode_batch_size
         self.encode_num_workers = encode_num_workers
+        self.scale_pos_weight = scale_pos_weight
 
         # Lazy-loaded on first evaluation
         self._train_metadata: Optional[List[Dict]] = None
@@ -272,7 +276,7 @@ class DownstreamEvalCallback(pl.Callback):
                 raise RuntimeError("No compounds matched between embeddings and labels.")
 
             # Train a quick XGBoost classifier
-            clf = xgb.XGBClassifier(
+            xgb_params = dict(
                 n_estimators=1000,
                 max_depth=2,
                 learning_rate=0.05,
@@ -285,6 +289,12 @@ class DownstreamEvalCallback(pl.Callback):
                 early_stopping_rounds=20,
                 verbosity=0,
             )
+            if self.scale_pos_weight:
+                n_pos = int(y_train.sum())
+                n_neg = len(y_train) - n_pos
+                if n_pos > 0:
+                    xgb_params["scale_pos_weight"] = n_neg / n_pos
+            clf = xgb.XGBClassifier(**xgb_params)
             clf.fit(X_train, y_train, eval_set=[(X_inf, y_inf)], verbose=False)
 
             # Evaluate
