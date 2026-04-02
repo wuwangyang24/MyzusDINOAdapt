@@ -63,8 +63,10 @@ class DownstreamEvalCallback(pl.Callback):
         Batch size for encoding images (default: 64).
     encode_num_workers : int
         DataLoader workers for image encoding (default: 4).
-    control_embeddings_path : str or None
-        Path to pre-computed control embeddings .pt file (optional).
+    train_control_embeddings_path : str or None
+        Path to pre-computed control embeddings .pt for training data (optional).
+    inf_control_embeddings_path : str or None
+        Path to pre-computed control embeddings .pt for inference data (optional).
     """
 
     def __init__(
@@ -81,7 +83,8 @@ class DownstreamEvalCallback(pl.Callback):
         normalize_before_subtract: bool = False,
         encode_batch_size: int = 64,
         encode_num_workers: int = 4,
-        control_embeddings_path: Optional[str] = None,
+        train_control_embeddings_path: Optional[str] = None,
+        inf_control_embeddings_path: Optional[str] = None,
     ):
         super().__init__()
         if not _HAS_XGBOOST:
@@ -108,8 +111,10 @@ class DownstreamEvalCallback(pl.Callback):
         self._inference_metadata: Optional[List[Dict]] = None
         self._cid2label: Optional[Dict[str, int]] = None
         self._inf_cid2label: Optional[Dict[str, int]] = None
-        self._control_embeddings: Optional[Dict] = None
-        self._control_embeddings_path = control_embeddings_path
+        self._train_control_embeddings: Optional[Dict] = None
+        self._inf_control_embeddings: Optional[Dict] = None
+        self._train_control_embeddings_path = train_control_embeddings_path
+        self._inf_control_embeddings_path = inf_control_embeddings_path
 
     # ------------------------------------------------------------------
     # Lazy loaders (run once)
@@ -129,8 +134,10 @@ class DownstreamEvalCallback(pl.Callback):
             "inference_root_dir": self.inference_root_dir,
             "inference_efficacy": self.inference_efficacy_path,
         }
-        if self._control_embeddings_path is not None:
-            required_files["control_embeddings"] = self._control_embeddings_path
+        if self._train_control_embeddings_path is not None:
+            required_files["train_control_embeddings"] = self._train_control_embeddings_path
+        if self._inf_control_embeddings_path is not None:
+            required_files["inf_control_embeddings"] = self._inf_control_embeddings_path
 
         missing = [name for name, path in required_files.items() if not Path(path).exists()]
         if missing:
@@ -157,9 +164,13 @@ class DownstreamEvalCallback(pl.Callback):
         self._inf_cid2label = load_inference_labels(self.inference_efficacy_path)
 
         # Pre-computed control embeddings
-        if self._control_embeddings_path is not None:
-            self._control_embeddings = torch.load(
-                self._control_embeddings_path, map_location="cpu", weights_only=False,
+        if self._train_control_embeddings_path is not None:
+            self._train_control_embeddings = torch.load(
+                self._train_control_embeddings_path, map_location="cpu", weights_only=False,
+            )
+        if self._inf_control_embeddings_path is not None:
+            self._inf_control_embeddings = torch.load(
+                self._inf_control_embeddings_path, map_location="cpu", weights_only=False,
             )
 
     # ------------------------------------------------------------------
@@ -230,7 +241,7 @@ class DownstreamEvalCallback(pl.Callback):
                 use_amp=device.type == "cuda",
                 transform=DINO_TRANSFORM,
                 num_workers=self.encode_num_workers,
-                control_embeddings=self._control_embeddings,
+                control_embeddings=self._train_control_embeddings,
             )
 
             # Encode inference embeddings
@@ -244,7 +255,7 @@ class DownstreamEvalCallback(pl.Callback):
                 use_amp=device.type == "cuda",
                 transform=DINO_TRANSFORM,
                 num_workers=self.encode_num_workers,
-                control_embeddings=self._control_embeddings,
+                control_embeddings=self._inf_control_embeddings,
             )
 
             # Build mean-pooled features

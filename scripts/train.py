@@ -304,10 +304,16 @@ def parse_args():
         help="DataLoader workers for downstream image encoding (default: 4).",
     )
     ds.add_argument(
-        "--downstream-control-embeddings",
+        "--downstream-train-control-embeddings",
         type=str,
         default=None,
-        help="Path to pre-computed control embeddings .pt for downstream eval.",
+        help="Path to pre-computed control embeddings .pt for downstream training data.",
+    )
+    ds.add_argument(
+        "--downstream-inf-control-embeddings",
+        type=str,
+        default=None,
+        help="Path to pre-computed control embeddings .pt for downstream inference data.",
     )
 
     return parser.parse_args()
@@ -711,7 +717,8 @@ def main():
             normalize_before_subtract=args.downstream_normalize_before_subtract,
             encode_batch_size=args.downstream_batch_size,
             encode_num_workers=args.downstream_num_workers,
-            control_embeddings_path=args.downstream_control_embeddings,
+            train_control_embeddings_path=args.downstream_train_control_embeddings,
+            inf_control_embeddings_path=args.downstream_inf_control_embeddings,
         )
         callbacks.append(downstream_cb)
         logger.info(f"Downstream eval enabled: every {args.downstream_eval_every} steps")
