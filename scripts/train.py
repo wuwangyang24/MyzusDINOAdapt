@@ -477,6 +477,7 @@ def main():
 
     # Optionally compile the model for faster training
     if getattr(args, 'compile', False):
+        torch.backends.cudnn.benchmark = True
         model = torch.compile(model)
         logger.info("Model compiled with torch.compile")
 
