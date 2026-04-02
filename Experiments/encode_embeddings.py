@@ -504,6 +504,30 @@ def encode_metadata(
     COMPOUND_KEY = "Compound"
 
     # ------------------------------------------------------------------
+    # Pre-check: count plates with / without control coverage
+    # ------------------------------------------------------------------
+    n_plates_with_ctrl = 0
+    n_plates_without_ctrl = 0
+    for compound_entry in metadata:
+        compound_id = str(compound_entry[COMPOUND_KEY])
+        plate_ids = [k for k in compound_entry.keys() if k != COMPOUND_KEY]
+        for plate_id in plate_ids:
+            plate_data = compound_entry[plate_id]
+            control_paths = plate_data.get("control", [])
+            has_precomputed = (
+                control_embeddings is not None
+                and compound_id in control_embeddings
+                and plate_id in control_embeddings[compound_id]
+                and "control" in control_embeddings[compound_id][plate_id]
+            )
+            if control_paths or has_precomputed:
+                n_plates_with_ctrl += 1
+            else:
+                n_plates_without_ctrl += 1
+    print(f"  Control coverage: {n_plates_with_ctrl} plates with controls, "
+          f"{n_plates_without_ctrl} plates without controls.")
+
+    # ------------------------------------------------------------------
     # Phase 1 — collect every image path and record segment metadata
     # ------------------------------------------------------------------
     all_paths: List[str] = []
@@ -539,9 +563,6 @@ def encode_metadata(
             elif control_paths:
                 segments.append((compound_id, plate_id, "control", len(control_paths)))
                 all_paths.extend(control_paths)
-            else:
-                print(f"  [WARN] Compound {compound_id}, plate {plate_id}: "
-                      f"no control images (and no pre-encoded controls).")
 
     if not all_paths:
         return {}
