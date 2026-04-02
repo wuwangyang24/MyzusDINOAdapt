@@ -9,7 +9,6 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 import pytorch_lightning as pl
 from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
-from pytorch_lightning.loggers import TensorBoardLogger
 
 # Ensure the project root (parent of scripts/) is on sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -18,6 +17,7 @@ from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
 from src.losses import TripleCheckLoss, TripleCheckBatchLoss
 from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms, compound_collate_fn
 from src.training import TripleCheckModule
+from src.training.downstream_eval import DownstreamEvalCallback
 from src.utils import setup_logger, load_config
 from torch.utils.data import DataLoader, RandomSampler
 
@@ -228,6 +228,86 @@ def parse_args():
         help="Path to pre-computed control embeddings .pt file. "
              "When set, control features are loaded from this file "
              "instead of being encoded by the backbone during training.",
+    )
+
+    # ── Downstream efficacy evaluation during training ───────────────
+    ds = parser.add_argument_group("Downstream eval (periodic efficacy classification)")
+    ds.add_argument(
+        "--downstream-eval-every",
+        type=int,
+        default=0,
+        help="Run downstream efficacy classifier every N training steps "
+             "(0 = disabled). Logs AUROC to all active loggers.",
+    )
+    ds.add_argument(
+        "--downstream-train-metadata",
+        type=str,
+        default=None,
+        help="Metadata JSON for classifier training images (e.g. 20 ppm).",
+    )
+    ds.add_argument(
+        "--downstream-train-root-dir",
+        type=str,
+        default=None,
+        help="Root directory for classifier training images.",
+    )
+    ds.add_argument(
+        "--downstream-train-efficacy",
+        type=str,
+        default=None,
+        help="Path to efficacy.pt with training compound efficacy values.",
+    )
+    ds.add_argument(
+        "--downstream-inf-metadata",
+        type=str,
+        default=None,
+        help="Metadata JSON for inference images (e.g. 100 ppm).",
+    )
+    ds.add_argument(
+        "--downstream-inf-root-dir",
+        type=str,
+        default=None,
+        help="Root directory for inference images.",
+    )
+    ds.add_argument(
+        "--downstream-inf-efficacy",
+        type=str,
+        default=None,
+        help="CSV with inference ground-truth labels ('Compound No', 'Active').",
+    )
+    ds.add_argument(
+        "--downstream-threshold",
+        type=float,
+        default=70.0,
+        help="Efficacy threshold for binarisation (default: 70).",
+    )
+    ds.add_argument(
+        "--downstream-subtract-control",
+        action="store_true",
+        help="Subtract per-plate averaged control embedding from treated embeddings.",
+    )
+    ds.add_argument(
+        "--downstream-normalize-before-subtract",
+        action="store_true",
+        help="L2-normalize embeddings before control subtraction.",
+    )
+    ds.add_argument(
+        "--downstream-batch-size",
+        type=int,
+        default=64,
+        help="Batch size for encoding images in downstream eval (default: 64).",
+    )
+    ds.add_argument(
+        "--downstream-num-workers",
+        type=int,
+        default=4,
+        help="DataLoader workers for downstream image encoding (default: 4).",
+    )
+    ds.add_argument(
+        "--downstream-control-embeddings",
+        type=str,
+        default=None,
+        help="Path to pre-computed control embeddings .pt for downstream eval.",
     )
 
     return parser.parse_args()
@@ -603,12 +683,41 @@ def main():
     )
     callbacks = [checkpoint_callback, last_checkpoint_callback, LearningRateMonitor(logging_interval="step")]
 
+    # --- Downstream eval callback (optional) ---
+    if args.downstream_eval_every > 0:
+        _required = {
+            "--downstream-train-metadata": args.downstream_train_metadata,
+            "--downstream-train-root-dir": args.downstream_train_root_dir,
+            "--downstream-train-efficacy": args.downstream_train_efficacy,
+            "--downstream-inf-metadata": args.downstream_inf_metadata,
+            "--downstream-inf-root-dir": args.downstream_inf_root_dir,
+            "--downstream-inf-efficacy": args.downstream_inf_efficacy,
+        }
+        missing = [k for k, v in _required.items() if v is None]
+        if missing:
+            raise ValueError(
+                f"--downstream-eval-every requires these arguments: {', '.join(missing)}"
+            )
+        downstream_cb = DownstreamEvalCallback(
+            eval_every_n_steps=args.downstream_eval_every,
+            train_metadata_path=args.downstream_train_metadata,
+            train_root_dir=args.downstream_train_root_dir,
+            train_efficacy_path=args.downstream_train_efficacy,
+            inference_metadata_path=args.downstream_inf_metadata,
+            inference_root_dir=args.downstream_inf_root_dir,
+            inference_efficacy_path=args.downstream_inf_efficacy,
+            efficacy_threshold=args.downstream_threshold,
+            subtract_control=args.downstream_subtract_control,
+            normalize_before_subtract=args.downstream_normalize_before_subtract,
+            encode_batch_size=args.downstream_batch_size,
+            encode_num_workers=args.downstream_num_workers,
+            control_embeddings_path=args.downstream_control_embeddings,
+        )
+        callbacks.append(downstream_cb)
+        logger.info(f"Downstream eval enabled: every {args.downstream_eval_every} steps")
+
     # --- Loggers ---
-    tb_logger = TensorBoardLogger(
-        save_dir=config["logging"]["log_dir"],
-        name="lightning_logs",
-    )
-    pl_loggers = [tb_logger]
+    pl_loggers = []
 
     wandb_cfg = config["logging"].get("wandb", {})
     if WANDB_AVAILABLE and wandb_cfg.get("enabled", False):

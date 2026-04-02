@@ -1,0 +1,276 @@
+"""
+PyTorch Lightning callback for periodic downstream classification evaluation.
+
+Every *eval_every_n_steps* training steps, this callback:
+  1. Encodes training and inference embeddings using the current model state.
+  2. Trains a quick XGBoost classifier on the training embeddings.
+  3. Evaluates on inference embeddings and logs AUROC (+ balanced accuracy, F1).
+"""
+
+import gc
+import json
+import warnings
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+import torch
+import pytorch_lightning as pl
+
+from Experiments.encode_embeddings import encode_metadata, DINO_TRANSFORM
+from Experiments.Efficacy500_classifier.classifier_utils import (
+    load_efficacy,
+    binarize_efficacy,
+    load_inference_labels,
+    build_mean_latent_features,
+)
+
+try:
+    import xgboost as xgb
+    _HAS_XGBOOST = True
+except ImportError:
+    _HAS_XGBOOST = False
+
+from sklearn.metrics import roc_auc_score, balanced_accuracy_score, f1_score
+
+
+class DownstreamEvalCallback(pl.Callback):
+    """Periodically evaluate the current model on a downstream efficacy classification task.
+
+    Parameters
+    ----------
+    eval_every_n_steps : int
+        Run evaluation every N global training steps.
+    train_metadata_path : str
+        Path to the JSON metadata for the classifier training images (e.g. 20 ppm).
+    train_root_dir : str
+        Root directory for the classifier training images.
+    train_efficacy_path : str
+        Path to efficacy.pt with training compound efficacy values.
+    inference_metadata_path : str
+        Path to the JSON metadata for the inference images (e.g. 100 ppm).
+    inference_root_dir : str
+        Root directory for the inference images.
+    inference_efficacy_path : str
+        Path to CSV with inference ground-truth labels ('Compound No', 'Active').
+    efficacy_threshold : float
+        Threshold for binarising efficacy (default: 70.0).
+    subtract_control : bool
+        Subtract per-plate averaged control embedding from treated embeddings.
+    normalize_before_subtract : bool
+        L2-normalize embeddings before control subtraction.
+    encode_batch_size : int
+        Batch size for encoding images (default: 64).
+    encode_num_workers : int
+        DataLoader workers for image encoding (default: 4).
+    control_embeddings_path : str or None
+        Path to pre-computed control embeddings .pt file (optional).
+    """
+
+    def __init__(
+        self,
+        eval_every_n_steps: int,
+        train_metadata_path: str,
+        train_root_dir: str,
+        train_efficacy_path: str,
+        inference_metadata_path: str,
+        inference_root_dir: str,
+        inference_efficacy_path: str,
+        efficacy_threshold: float = 70.0,
+        subtract_control: bool = False,
+        normalize_before_subtract: bool = False,
+        encode_batch_size: int = 64,
+        encode_num_workers: int = 4,
+        control_embeddings_path: Optional[str] = None,
+    ):
+        super().__init__()
+        if not _HAS_XGBOOST:
+            raise ImportError(
+                "xgboost is required for DownstreamEvalCallback. "
+                "Install it with:  pip install xgboost"
+            )
+
+        self.eval_every_n_steps = eval_every_n_steps
+        self.train_metadata_path = train_metadata_path
+        self.train_root_dir = Path(train_root_dir)
+        self.train_efficacy_path = train_efficacy_path
+        self.inference_metadata_path = inference_metadata_path
+        self.inference_root_dir = Path(inference_root_dir)
+        self.inference_efficacy_path = inference_efficacy_path
+        self.efficacy_threshold = efficacy_threshold
+        self.subtract_control = subtract_control
+        self.normalize_before_subtract = normalize_before_subtract
+        self.encode_batch_size = encode_batch_size
+        self.encode_num_workers = encode_num_workers
+
+        # Lazy-loaded on first evaluation
+        self._train_metadata: Optional[List[Dict]] = None
+        self._inference_metadata: Optional[List[Dict]] = None
+        self._cid2label: Optional[Dict[str, int]] = None
+        self._inf_cid2label: Optional[Dict[str, int]] = None
+        self._control_embeddings: Optional[Dict] = None
+        self._control_embeddings_path = control_embeddings_path
+
+    # ------------------------------------------------------------------
+    # Lazy loaders (run once)
+    # ------------------------------------------------------------------
+
+    def _ensure_loaded(self) -> None:
+        """Load metadata, efficacy labels, and control embeddings once."""
+        if self._train_metadata is not None:
+            return
+
+        # Training metadata
+        with open(self.train_metadata_path, "r") as f:
+            raw = json.load(f)
+        self._train_metadata = raw if isinstance(raw, list) else raw.get("compounds", raw)
+
+        # Inference metadata
+        with open(self.inference_metadata_path, "r") as f:
+            raw = json.load(f)
+        self._inference_metadata = raw if isinstance(raw, list) else raw.get("compounds", raw)
+
+        # Training efficacy labels
+        efficacy = load_efficacy(self.train_efficacy_path)
+        self._cid2label = binarize_efficacy(efficacy, threshold=self.efficacy_threshold)
+
+        # Inference efficacy labels
+        self._inf_cid2label = load_inference_labels(self.inference_efficacy_path)
+
+        # Pre-computed control embeddings
+        if self._control_embeddings_path is not None:
+            self._control_embeddings = torch.load(
+                self._control_embeddings_path, map_location="cpu", weights_only=False,
+            )
+
+    # ------------------------------------------------------------------
+    # Hook
+    # ------------------------------------------------------------------
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        step = trainer.global_step
+        if step == 0 or step % self.eval_every_n_steps != 0:
+            return
+
+        # Only run on rank 0 in multi-GPU
+        if trainer.global_rank != 0:
+            return
+
+        self._ensure_loaded()
+
+        try:
+            auroc, bal_acc, f1 = self._evaluate(pl_module)
+        except Exception as e:
+            warnings.warn(f"[DownstreamEval] Evaluation failed at step {step}: {e}")
+            return
+
+        # Log to all PL loggers (TensorBoard, W&B, etc.)
+        pl_module.log("downstream/auroc", auroc, on_step=True, on_epoch=False,
+                      rank_zero_only=True, batch_size=1)
+        pl_module.log("downstream/balanced_accuracy", bal_acc, on_step=True, on_epoch=False,
+                      rank_zero_only=True, batch_size=1)
+        pl_module.log("downstream/f1", f1, on_step=True, on_epoch=False,
+                      rank_zero_only=True, batch_size=1)
+
+        # Also log to W&B directly for immediate visibility
+        try:
+            import wandb
+            if wandb.run is not None:
+                wandb.log({
+                    "downstream/auroc": auroc,
+                    "downstream/balanced_accuracy": bal_acc,
+                    "downstream/f1": f1,
+                }, commit=False)
+        except ImportError:
+            pass
+
+        print(f"  [DownstreamEval] step={step}  AUROC={auroc:.4f}  "
+              f"BalAcc={bal_acc:.4f}  F1={f1:.4f}")
+
+    # ------------------------------------------------------------------
+    # Core evaluation logic
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def _evaluate(self, pl_module) -> tuple:
+        """Encode embeddings, train XGBoost, evaluate, return (auroc, bal_acc, f1)."""
+        model = pl_module.model
+        was_training = model.training
+        model.eval()
+        device = pl_module.device
+
+        try:
+            # Encode training embeddings
+            train_embeddings = encode_metadata(
+                metadata=self._train_metadata,
+                root_dir=self.train_root_dir,
+                model=model,
+                device=device,
+                batch_size=self.encode_batch_size,
+                return_reg_tokens=False,
+                use_amp=device.type == "cuda",
+                transform=DINO_TRANSFORM,
+                num_workers=self.encode_num_workers,
+                control_embeddings=self._control_embeddings,
+            )
+
+            # Encode inference embeddings
+            inf_embeddings = encode_metadata(
+                metadata=self._inference_metadata,
+                root_dir=self.inference_root_dir,
+                model=model,
+                device=device,
+                batch_size=self.encode_batch_size,
+                return_reg_tokens=False,
+                use_amp=device.type == "cuda",
+                transform=DINO_TRANSFORM,
+                num_workers=self.encode_num_workers,
+                control_embeddings=self._control_embeddings,
+            )
+
+            # Build mean-pooled features
+            X_train, y_train, _ = build_mean_latent_features(
+                train_embeddings, self._cid2label,
+                self.subtract_control, self.normalize_before_subtract,
+            )
+            X_inf, y_inf, _ = build_mean_latent_features(
+                inf_embeddings, self._inf_cid2label,
+                self.subtract_control, self.normalize_before_subtract,
+            )
+
+            if X_train.shape[0] == 0 or X_inf.shape[0] == 0:
+                raise RuntimeError("No compounds matched between embeddings and labels.")
+
+            # Train a quick XGBoost classifier
+            clf = xgb.XGBClassifier(
+                n_estimators=1000,
+                max_depth=2,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.7,
+                objective="binary:logistic",
+                eval_metric="auc",
+                use_label_encoder=False,
+                random_state=42,
+                early_stopping_rounds=20,
+                verbosity=0,
+            )
+            clf.fit(X_train, y_train, eval_set=[(X_inf, y_inf)], verbose=False)
+
+            # Evaluate
+            inf_preds = clf.predict(X_inf)
+            inf_proba = clf.predict_proba(X_inf)[:, 1]
+            auroc = roc_auc_score(y_inf, inf_proba)
+            bal_acc = balanced_accuracy_score(y_inf, inf_preds)
+            f1 = f1_score(y_inf, inf_preds, average="weighted", zero_division=0)
+
+        finally:
+            # Restore model training state
+            if was_training:
+                model.train()
+            # Clean up
+            gc.collect()
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        return auroc, bal_acc, f1
