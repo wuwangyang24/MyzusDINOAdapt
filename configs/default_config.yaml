@@ -16,7 +16,7 @@ model:
 lora:
   r: 8  # LoRA rank
   lora_alpha: 8.0  # Scaling factor
-  lora_dropout: 0.1  # Dropout rate
+  lora_dropout: 0.  # Dropout rate
   train_layernorm: false  # Unfreeze LayerNorm parameters during training
 
 # DoRA configuration

@@ -26,7 +26,7 @@ class LoRALinear(nn.Module):
         out_features: int,
         r: int = 8,
         lora_alpha: float = 16.0,
-        lora_dropout: float = 0.1,
+        lora_dropout: float = 0.,
         bias: bool = True,
     ):
         """
