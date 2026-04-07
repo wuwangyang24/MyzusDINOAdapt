@@ -444,8 +444,8 @@ def parse_args() -> argparse.Namespace:
         help="Random seed for reproducibility. Default: 42.",
     )
     parser.add_argument(
-        "--marker_size", type=float, default=60.0,
-        help="Scatter marker size. Default: 60.",
+        "--marker_size", type=float, default=20.0,
+        help="Scatter marker size. Default: 20.",
     )
     parser.add_argument(
         "--figscale", type=float, default=6.0,
