@@ -254,16 +254,19 @@ def visualize_controls(
     n_models = len(embedding_paths)
 
     # ── Collect control vectors per file ─────────────────────────────
+    print(f"\n[1/5] Loading {n_models} embedding file(s)...")
     all_model_data: List[Tuple[np.ndarray, List[str], List[str]]] = []
     for path in embedding_paths:
+        print(f"  Loading: {Path(path).name}")
         emb = load_embeddings(path)
         vecs, pids, cids = collect_control_vectors(emb)
-        print(f"  {Path(path).name}: {vecs.shape[0]} control centroids, "
+        print(f"    → {vecs.shape[0]} control centroids, "
               f"dim={vecs.shape[1]}, plates={len(set(pids))}")
         all_model_data.append((vecs, pids, cids))
 
     # ── Optionally sub-sample plates ─────────────────────────────────
     if num_plates is not None:
+        print(f"\n[2/5] Sampling {num_plates} plates...")
         # Discover the union of plate IDs across all files
         all_available_plates = sorted(
             set(pid for _, pids, _ in all_model_data for pid in pids)
@@ -271,7 +274,8 @@ def visualize_controls(
         k = min(num_plates, len(all_available_plates))
         rng = random.Random(random_state)
         sampled_plates = set(rng.sample(all_available_plates, k))
-        print(f"  Randomly sampled {k} plates: {sorted(sampled_plates)}")
+        print(f"  Available plates: {len(all_available_plates)}")
+        print(f"  Sampled {k} plates: {sorted(sampled_plates)}")
 
         filtered: List[Tuple[np.ndarray, List[str], List[str]]] = []
         for vecs, pids, cids in all_model_data:
@@ -282,8 +286,14 @@ def visualize_controls(
                 [c for c, m in zip(cids, mask) if m],
             ))
         all_model_data = filtered
+    else:
+        print(f"\n[2/5] Plate sampling: skipped (using all plates)")
 
     # ── Dimensionality reduction ─────────────────────────────────────
+    total_points = sum(d[0].shape[0] for d in all_model_data)
+    mode_str = "jointly" if joint else "independently"
+    print(f"\n[3/5] Reducing dimensions with {method.upper()} ({mode_str})...")
+    print(f"  Total points: {total_points}")
     reduce_kw = dict(
         method=method,
         random_state=random_state,
@@ -306,6 +316,8 @@ def visualize_controls(
             for vecs, _, _ in all_model_data
         ]
 
+    print(f"  ✓ Dimensionality reduction complete.")
+
     # ── Shared plate colour map ──────────────────────────────────────
     all_plates: List[str] = []
     for _, pids, _ in all_model_data:
@@ -313,6 +325,7 @@ def visualize_controls(
     color_map = _get_plate_color_map(all_plates)
 
     # ── Plot ─────────────────────────────────────────────────────────
+    print(f"\n[4/5] Plotting {len(set(all_plates))} unique plates across {n_models} subplot(s)...")
     ncols = min(n_models, 3)
     nrows = (n_models + ncols - 1) // ncols
     fig, axes = plt.subplots(
@@ -365,11 +378,15 @@ def visualize_controls(
     )
     fig.tight_layout()
 
+    print(f"\n[5/5] Saving / displaying figure...")
     if output:
         fig.savefig(output, dpi=200, bbox_inches="tight")
-        print(f"Figure saved to: {output}")
+        print(f"  ✓ Figure saved to: {output}")
     else:
+        print(f"  Opening interactive window...")
         plt.show()
+
+    print("Done.")
 
 
 # ---------------------------------------------------------------------------
