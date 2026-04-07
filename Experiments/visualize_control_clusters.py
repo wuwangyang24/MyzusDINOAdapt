@@ -220,8 +220,7 @@ def plot_single(
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_xlabel("")
     ax.set_ylabel("")
-    ax.set_xticks([])
-    ax.set_yticks([])
+    ax.tick_params(axis="both", labelsize=7)
 
 
 # ---------------------------------------------------------------------------
@@ -341,8 +340,7 @@ def visualize_controls(
 
     # ── Plot ─────────────────────────────────────────────────────────
     print(f"\n[4/5] Plotting {len(unique_plates)} unique plates across {n_models} subplot(s)...")
-    sns.set_theme(style="darkgrid")
-    plt.style.use("ggplot")
+    sns.set_theme(style="whitegrid")
     ncols = min(n_models, 3)
     nrows = (n_models + ncols - 1) // ncols
     fig, axes = plt.subplots(
