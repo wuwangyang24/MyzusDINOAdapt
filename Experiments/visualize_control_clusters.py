@@ -60,8 +60,9 @@ from typing import Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
-from matplotlib.lines import Line2D
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
@@ -165,44 +166,34 @@ def reduce_dimensions(
 # Plotting helpers
 # ---------------------------------------------------------------------------
 
-def _get_plate_color_map(plate_ids: List[str]) -> Dict[str, np.ndarray]:
-    """Assign a unique colour to each plate from a qualitative colourmap."""
-    unique = sorted(set(plate_ids))
-    cmap = plt.get_cmap("tab20" if len(unique) <= 20 else "gist_ncar")
-    return {pid: cmap(i / max(len(unique) - 1, 1)) for i, pid in enumerate(unique)}
-
-
 def plot_single(
     ax: plt.Axes,
     coords_2d: np.ndarray,
     plate_ids: List[str],
     compound_ids: List[str],
-    color_map: Dict[str, np.ndarray],
     title: str,
     marker_size: float = 60.0,
     annotate: bool = False,
 ) -> None:
-    """Scatter-plot control centroids on *ax*, coloured by plate."""
-    plate_arr = np.array(plate_ids)
+    """Scatter-plot control centroids on *ax*, coloured by plate using seaborn."""
+    df = pd.DataFrame({
+        "x": coords_2d[:, 0],
+        "y": coords_2d[:, 1],
+        "Plate": plate_ids,
+        "Compound": compound_ids,
+    })
 
-    for pid in sorted(set(plate_ids)):
-        mask = plate_arr == pid
-        ax.scatter(
-            coords_2d[mask, 0],
-            coords_2d[mask, 1],
-            c=[color_map[pid]],
-            s=marker_size,
-            alpha=0.8,
-            label=f"Plate {pid}",
-            edgecolors="k",
-            linewidths=0.4,
-        )
+    sns.scatterplot(
+        data=df, x="x", y="y", hue="Plate",
+        s=marker_size, alpha=0.8, edgecolor="k", linewidth=0.4,
+        ax=ax, legend=False,
+    )
 
     if annotate:
-        for i, (x, y) in enumerate(coords_2d):
+        for _, row in df.iterrows():
             ax.annotate(
-                compound_ids[i],
-                (x, y),
+                row["Compound"],
+                (row["x"], row["y"]),
                 fontsize=6,
                 alpha=0.7,
                 textcoords="offset points",
@@ -214,11 +205,9 @@ def plot_single(
     ylim = ax.get_ylim()
     x_range = xlim[1] - xlim[0]
     y_range = ylim[1] - ylim[0]
-    # Choose a round scale-bar length ≈ 20% of the x-axis range
     raw = x_range * 0.2
     magnitude = 10 ** np.floor(np.log10(raw))
     bar_len = np.round(raw / magnitude) * magnitude
-    # Position: bottom-right corner with a small margin
     margin_x = x_range * 0.05
     margin_y = y_range * 0.05
     bar_x = xlim[1] - margin_x - bar_len
@@ -229,6 +218,8 @@ def plot_single(
             ha="center", va="bottom", fontsize=7, color="k")
 
     ax.set_title(title, fontsize=12, fontweight="bold")
+    ax.set_xlabel("")
+    ax.set_ylabel("")
     ax.set_xticks([])
     ax.set_yticks([])
 
@@ -337,14 +328,20 @@ def visualize_controls(
 
     print(f"  ✓ Dimensionality reduction complete.")
 
-    # ── Shared plate colour map ──────────────────────────────────────
+    # ── Consistent seaborn palette across all subplots ────────────────
     all_plates: List[str] = []
     for _, pids, _ in all_model_data:
         all_plates.extend(pids)
-    color_map = _get_plate_color_map(all_plates)
+    unique_plates = sorted(set(all_plates))
+    palette = sns.color_palette(
+        "tab20" if len(unique_plates) <= 20 else "husl",
+        n_colors=len(unique_plates),
+    )
+    sns.set_palette(palette)
 
     # ── Plot ─────────────────────────────────────────────────────────
-    print(f"\n[4/5] Plotting {len(set(all_plates))} unique plates across {n_models} subplot(s)...")
+    print(f"\n[4/5] Plotting {len(unique_plates)} unique plates across {n_models} subplot(s)...")
+    sns.set_theme(style="whitegrid")
     ncols = min(n_models, 3)
     nrows = (n_models + ncols - 1) // ncols
     fig, axes = plt.subplots(
@@ -359,7 +356,7 @@ def visualize_controls(
         vecs, pids, cids = all_model_data[idx]
         plot_single(
             ax, coords_per_model[idx], pids, cids,
-            color_map, labels[idx],
+            labels[idx],
             marker_size=marker_size,
             annotate=annotate,
         )
@@ -368,26 +365,6 @@ def visualize_controls(
     for idx in range(n_models, nrows * ncols):
         row, col = divmod(idx, ncols)
         axes[row][col].set_visible(False)
-
-    # ── Legend (one entry per plate) ─────────────────────────────────
-    unique_plates = sorted(set(all_plates))
-    legend_handles = [
-        Line2D(
-            [0], [0], marker="o", color="w",
-            markerfacecolor=color_map[pid],
-            markeredgecolor="k", markersize=8,
-            label=f"Plate {pid}",
-        )
-        for pid in unique_plates
-    ]
-    fig.legend(
-        handles=legend_handles,
-        loc="lower center",
-        ncol=min(len(legend_handles), 8),
-        fontsize=9,
-        frameon=True,
-        bbox_to_anchor=(0.5, -0.02),
-    )
 
     method_label = {"umap": "UMAP", "tsne": "t-SNE", "pca": "PCA"}[method]
     mode_label = "joint" if joint else "independent"
