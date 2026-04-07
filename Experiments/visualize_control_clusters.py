@@ -341,7 +341,8 @@ def visualize_controls(
 
     # ── Plot ─────────────────────────────────────────────────────────
     print(f"\n[4/5] Plotting {len(unique_plates)} unique plates across {n_models} subplot(s)...")
-    sns.set_theme(style="whitegrid")
+    sns.set_theme(style="darkgrid")
+    plt.style.use("ggplot")
     ncols = min(n_models, 3)
     nrows = (n_models + ncols - 1) // ncols
     fig, axes = plt.subplots(
