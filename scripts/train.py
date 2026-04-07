@@ -683,6 +683,9 @@ def main():
     bs = config["training"]["batch_size"]
     ckpt_tag = f"{backbone}_{adaptation_method}_r{r}a{alpha_str}-T{args.repulsion_temperature}-LR{lr_str}-BS{bs}"
     ckpt_tag += f"_meta{len(args.metadata)}"
+    dropout = config[adaptation_method].get(f"{adaptation_method}_dropout", 0.1)
+    dropout_str = f"{dropout:g}"
+    ckpt_tag += f"_drop{dropout_str}"
     if args.control_embeddings:
         ckpt_tag += "_PreCon"
     if config[adaptation_method].get("train_layernorm", False):
