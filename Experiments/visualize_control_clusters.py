@@ -200,23 +200,6 @@ def plot_single(
                 xytext=(4, 4),
             )
 
-    # Add a scale bar so distances are interpretable
-    xlim = ax.get_xlim()
-    ylim = ax.get_ylim()
-    x_range = xlim[1] - xlim[0]
-    y_range = ylim[1] - ylim[0]
-    raw = x_range * 0.2
-    magnitude = 10 ** np.floor(np.log10(raw))
-    bar_len = np.round(raw / magnitude) * magnitude
-    margin_x = x_range * 0.05
-    margin_y = y_range * 0.05
-    bar_x = xlim[1] - margin_x - bar_len
-    bar_y = ylim[0] + margin_y
-    ax.plot([bar_x, bar_x + bar_len], [bar_y, bar_y], color="k", linewidth=2,
-            clip_on=False)
-    ax.text(bar_x + bar_len / 2, bar_y + y_range * 0.02, f"{bar_len:.1f}",
-            ha="center", va="bottom", fontsize=7, color="k")
-
     ax.set_title(title, fontsize=12, fontweight="bold")
     ax.set_xlabel("")
     ax.set_ylabel("")
