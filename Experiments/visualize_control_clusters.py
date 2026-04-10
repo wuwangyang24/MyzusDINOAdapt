@@ -50,6 +50,17 @@ Usage examples:
         --embeddings dino_base.pt dino_lora.pt \
         --labels     "DINO Base"  "DINO+LoRA" \
         --joint
+
+    # Quantitative mode: pairwise cosine-similarity / Euclidean-distance
+    # heatmaps + summary stats (no 2-D scatter)
+    python visualize_control_clusters.py \
+        --embeddings /path/to/embeddings.pt \
+        --quantitative
+
+    # Quantitative mode with custom outlier threshold (default: 2.0σ)
+    python visualize_control_clusters.py \
+        --embeddings /path/to/embeddings.pt \
+        --quantitative --outlier_threshold 1.5
 """
 
 import argparse
@@ -65,6 +76,7 @@ import seaborn as sns
 import torch
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +219,136 @@ def plot_single(
 
 
 # ---------------------------------------------------------------------------
+# Quantitative plate-distance analysis
+# ---------------------------------------------------------------------------
+
+def compute_plate_centroids(
+    vectors: np.ndarray,
+    plate_ids: List[str],
+) -> Tuple[np.ndarray, List[str]]:
+    """
+    Average control vectors per plate to get one centroid per unique plate.
+
+    Returns:
+        centroids:    (P, D) array – one row per unique plate.
+        unique_plates: length-P list of plate IDs.
+    """
+    plate_arr = np.array(plate_ids)
+    unique_plates = sorted(set(plate_ids))
+    centroids = np.stack([
+        vectors[plate_arr == pid].mean(axis=0) for pid in unique_plates
+    ])
+    return centroids, unique_plates
+
+
+def quantitative_plate_analysis(
+    vectors: np.ndarray,
+    plate_ids: List[str],
+    label: str,
+    output: Optional[str] = None,
+    figscale: float = 6.0,
+    outlier_threshold: float = 2.0,
+) -> None:
+    """
+    Compute and display pairwise cosine-similarity and Euclidean-distance
+    heatmaps between plate control centroids, plus summary statistics.
+
+    Args:
+        vectors:           (M, D) control centroid vectors.
+        plate_ids:         length-M plate labels.
+        label:             Display name for this embedding file.
+        output:            Base path for saving figures (None → interactive).
+        figscale:          Scale factor for figure dimensions.
+        outlier_threshold: Flag plates whose mean distance to others exceeds
+                           (global_mean + threshold * global_std).
+    """
+    centroids, unique_plates = compute_plate_centroids(vectors, plate_ids)
+    n_plates = len(unique_plates)
+    print(f"\n  Computing pairwise metrics for {n_plates} plates...")
+
+    # ── Pairwise metrics ──────────────────────────────────────────────
+    cos_sim = cosine_similarity(centroids)           # (P, P)
+    euc_dist = euclidean_distances(centroids)         # (P, P)
+
+    # ── Summary statistics (upper triangle, excluding diagonal) ───────
+    triu_idx = np.triu_indices(n_plates, k=1)
+    cos_vals = cos_sim[triu_idx]
+    euc_vals = euc_dist[triu_idx]
+
+    print(f"\n  ┌─── {label} ─── Pairwise Cosine Similarity ───")
+    print(f"  │  Mean:  {cos_vals.mean():.4f}")
+    print(f"  │  Std:   {cos_vals.std():.4f}")
+    print(f"  │  Min:   {cos_vals.min():.4f}")
+    print(f"  │  Max:   {cos_vals.max():.4f}")
+    print(f"  └────────────────────────────────────────────────")
+
+    print(f"\n  ┌─── {label} ─── Pairwise Euclidean Distance ───")
+    print(f"  │  Mean:  {euc_vals.mean():.4f}")
+    print(f"  │  Std:   {euc_vals.std():.4f}")
+    print(f"  │  Min:   {euc_vals.min():.4f}")
+    print(f"  │  Max:   {euc_vals.max():.4f}")
+    print(f"  └─────────────────────────────────────────────────")
+
+    # ── Outlier detection ─────────────────────────────────────────────
+    mean_euc_per_plate = np.array([
+        euc_dist[i, np.arange(n_plates) != i].mean()
+        for i in range(n_plates)
+    ])
+    global_mean = mean_euc_per_plate.mean()
+    global_std = mean_euc_per_plate.std()
+    threshold = global_mean + outlier_threshold * global_std
+    outliers = [
+        (unique_plates[i], mean_euc_per_plate[i])
+        for i in range(n_plates)
+        if mean_euc_per_plate[i] > threshold
+    ]
+    if outliers:
+        print(f"\n  ⚠ Outlier plates (mean Euclidean > {threshold:.4f}):")
+        for pid, dist in sorted(outliers, key=lambda x: -x[1]):
+            print(f"    Plate {pid}: mean dist = {dist:.4f}")
+    else:
+        print(f"\n  ✓ No outlier plates detected "
+              f"(threshold: mean + {outlier_threshold}σ = {threshold:.4f})")
+
+    # ── Heatmaps ──────────────────────────────────────────────────────
+    fig, (ax_cos, ax_euc) = plt.subplots(
+        1, 2, figsize=(figscale * 2.2, figscale),
+    )
+
+    sns.heatmap(
+        cos_sim, xticklabels=unique_plates, yticklabels=unique_plates,
+        annot=n_plates <= 15, fmt=".2f", cmap="RdYlGn",
+        vmin=cos_vals.min() - 0.01, vmax=1.0,
+        square=True, linewidths=0.3, ax=ax_cos,
+    )
+    ax_cos.set_title("Cosine Similarity", fontsize=11, fontweight="bold")
+    ax_cos.tick_params(axis="both", labelsize=7)
+
+    sns.heatmap(
+        euc_dist, xticklabels=unique_plates, yticklabels=unique_plates,
+        annot=n_plates <= 15, fmt=".2f", cmap="YlOrRd",
+        square=True, linewidths=0.3, ax=ax_euc,
+    )
+    ax_euc.set_title("Euclidean Distance", fontsize=11, fontweight="bold")
+    ax_euc.tick_params(axis="both", labelsize=7)
+
+    fig.suptitle(
+        f"Plate Control Centroid Distances — {label}",
+        fontsize=13, fontweight="bold", y=1.02,
+    )
+    fig.tight_layout()
+
+    if output:
+        stem = Path(output).stem
+        suffix = Path(output).suffix or ".png"
+        quant_path = str(Path(output).parent / f"{stem}_quantitative{suffix}")
+        fig.savefig(quant_path, dpi=200, bbox_inches="tight")
+        print(f"  ✓ Heatmap saved to: {quant_path}")
+    else:
+        plt.show()
+
+
+# ---------------------------------------------------------------------------
 # Main visualisation routine
 # ---------------------------------------------------------------------------
 
@@ -224,6 +366,8 @@ def visualize_controls(
     random_state: int = 42,
     marker_size: float = 60.0,
     figscale: float = 6.0,
+    quantitative: bool = False,
+    outlier_threshold: float = 2.0,
 ) -> None:
     """
     Load embedding files, collect control centroids, reduce to 2-D, and plot.
@@ -236,6 +380,10 @@ def visualize_controls(
         annotate:        Annotate each point with its compound ID.
         num_plates:      Randomly sample this many plates. If None, use all.
         output:          Save figure to path; if None, show interactively.
+        quantitative:    Compute pairwise cosine-similarity / Euclidean-distance
+                         heatmaps and summary stats instead of scatter plots.
+        outlier_threshold: Flag plates whose mean distance exceeds
+                         (global_mean + threshold * global_std).
         perplexity:      t-SNE perplexity.
         n_neighbors:     UMAP n_neighbors.
         min_dist:        UMAP min_dist.
@@ -280,6 +428,19 @@ def visualize_controls(
         all_model_data = filtered
     else:
         print(f"\n[2/5] Plate sampling: skipped (using all plates)")
+
+    # ── Quantitative mode (skip dim-reduction + scatter, do heatmaps) ─
+    if quantitative:
+        print(f"\n[3/5] Quantitative analysis mode...")
+        for idx, (vecs, pids, cids) in enumerate(all_model_data):
+            quantitative_plate_analysis(
+                vecs, pids, labels[idx],
+                output=output,
+                figscale=figscale,
+                outlier_threshold=outlier_threshold,
+            )
+        print("Done.")
+        return
 
     # ── Dimensionality reduction ─────────────────────────────────────
     total_points = sum(d[0].shape[0] for d in all_model_data)
@@ -405,6 +566,17 @@ def parse_args() -> argparse.Namespace:
         help="Annotate each point with its compound ID.",
     )
     parser.add_argument(
+        "--quantitative", action="store_true", default=False,
+        help="Compute pairwise cosine-similarity and Euclidean-distance "
+             "heatmaps between plate control centroids, plus summary stats. "
+             "Skips the 2-D scatter plot.",
+    )
+    parser.add_argument(
+        "--outlier_threshold", type=float, default=2.0,
+        help="Flag plates whose mean Euclidean distance to others exceeds "
+             "(global_mean + threshold * global_std). Default: 2.0.",
+    )
+    parser.add_argument(
         "--output", type=str, default=None,
         help="Save figure to this path (e.g. controls.png). "
              "If omitted, opens an interactive window.",
@@ -462,6 +634,8 @@ def main() -> None:
         random_state=args.seed,
         marker_size=args.marker_size,
         figscale=args.figscale,
+        quantitative=args.quantitative,
+        outlier_threshold=args.outlier_threshold,
     )
 
 
