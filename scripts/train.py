@@ -234,6 +234,13 @@ def parse_args():
         action="store_true",
         help="Apply torch.compile to the model for faster training (requires PyTorch 2.0+).",
     )
+    parser.add_argument(
+        "--remove-compounds",
+        type=str,
+        default=None,
+        help="Path to a CSV file with a 'Compound No' column. "
+             "Compounds listed in this file will be excluded from the training set.",
+    )
 
     # ── Downstream efficacy evaluation during training ───────────────
     ds = parser.add_argument_group("Downstream eval (periodic efficacy classification)")
@@ -516,6 +523,18 @@ def main():
 
     # Load and merge metadata from all files
     all_compounds = _load_and_merge_metadata(args.metadata, logger)
+    # Remove compounds specified in --remove-compounds CSV
+    if args.remove_compounds:
+        import pandas as pd
+        remove_df = pd.read_csv(args.remove_compounds)
+        remove_ids = set(str(x) for x in remove_df["Compound No"])
+        before_remove = len(all_compounds)
+        all_compounds = [
+            c for c in all_compounds
+            if str(c.get("Compound", c.get("id", ""))) not in remove_ids
+        ]
+        logger.info(f"Removed {before_remove - len(all_compounds)} compounds via --remove-compounds ({before_remove} -> {len(all_compounds)})")
+
     before = len(all_compounds)
     all_compounds = [
         c for c in all_compounds
@@ -690,6 +709,8 @@ def main():
         ckpt_tag += "_PreCon"
     if config[adaptation_method].get("train_layernorm", False):
         ckpt_tag += "_LN"
+    if args.remove_compounds:
+        ckpt_tag += "_RmCpd"
     ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(ckpt_subdir),
