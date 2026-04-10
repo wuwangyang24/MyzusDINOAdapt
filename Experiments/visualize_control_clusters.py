@@ -344,8 +344,8 @@ def quantitative_plate_analysis(
         quant_path = str(Path(output).parent / f"{stem}_quantitative{suffix}")
         fig.savefig(quant_path, dpi=200, bbox_inches="tight")
         print(f"  ✓ Heatmap saved to: {quant_path}")
-    else:
-        plt.show()
+
+    plt.show()
 
 
 # ---------------------------------------------------------------------------
