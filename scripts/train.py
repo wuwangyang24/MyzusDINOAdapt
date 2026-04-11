@@ -718,6 +718,8 @@ def main():
         ckpt_tag += "_LN"
     if args.remove_compounds:
         ckpt_tag += "_RmCpd"
+    if args.gradient_clip_val > 0:
+        ckpt_tag += f"_GC{args.gradient_clip_val:g}"
     ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(ckpt_subdir),
