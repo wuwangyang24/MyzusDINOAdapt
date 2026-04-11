@@ -721,6 +721,8 @@ def main():
     ckpt_tag += f"_GC{args.gradient_clip_val:g}"
     if args.normalize_embeddings:
         ckpt_tag += "_NormEmb"
+    else:
+        ckpt_tag += "_NoNormEmb"
     ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(ckpt_subdir),
