@@ -208,7 +208,7 @@ class DownstreamEvalCallback(pl.Callback):
         self._ensure_loaded()
 
         try:
-            auroc, bal_acc, f1, pred_df = self._evaluate(pl_module)
+            auroc, bal_acc, f1, pred_df, train_embeddings, inf_embeddings = self._evaluate(pl_module)
         except Exception as e:
             warnings.warn(f"[DownstreamEval] Evaluation failed at step {step}: {e}")
             return
@@ -247,7 +247,10 @@ class DownstreamEvalCallback(pl.Callback):
                 self.ckpt_dir.mkdir(parents=True, exist_ok=True)
                 ckpt_path = self.ckpt_dir / "best_auroc.ckpt"
                 trainer.save_checkpoint(str(ckpt_path))
-                print(f"  [DownstreamEval] New best AUROC={auroc:.4f} — saved {ckpt_path}")
+                # Save encoded embeddings alongside the checkpoint
+                torch.save(train_embeddings, self.ckpt_dir / "best_auroc_train_embeddings.pt")
+                torch.save(inf_embeddings, self.ckpt_dir / "best_auroc_inf_embeddings.pt")
+                print(f"  [DownstreamEval] New best AUROC={auroc:.4f} — saved {ckpt_path} + embeddings")
 
         best_tag = " (best)" if is_best else ""
         print(f"  [DownstreamEval] step={step}  AUROC={auroc:.4f}{best_tag}  "
@@ -360,4 +363,4 @@ class DownstreamEvalCallback(pl.Callback):
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        return auroc, bal_acc, f1, pred_df
+        return auroc, bal_acc, f1, pred_df, train_embeddings, inf_embeddings
