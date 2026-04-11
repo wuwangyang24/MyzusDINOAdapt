@@ -92,6 +92,7 @@ class DownstreamEvalCallback(pl.Callback):
         inf_control_embeddings_path: Optional[str] = None,
         scale_pos_weight: bool = False,
         ckpt_dir: Optional[str] = None,
+        num_samples_control: Optional[int] = None,
     ):
         super().__init__()
         if not _HAS_XGBOOST:
@@ -113,6 +114,7 @@ class DownstreamEvalCallback(pl.Callback):
         self.encode_batch_size = encode_batch_size
         self.encode_num_workers = encode_num_workers
         self.scale_pos_weight = scale_pos_weight
+        self.num_samples_control = num_samples_control
         self.ckpt_dir = Path(ckpt_dir) if ckpt_dir is not None else None
         self.best_auroc = -1.0
 
@@ -281,6 +283,7 @@ class DownstreamEvalCallback(pl.Callback):
                 transform=DINO_TRANSFORM,
                 num_workers=self.encode_num_workers,
                 control_embeddings=self._train_control_embeddings,
+                num_samples_control=self.num_samples_control,
             )
 
             # Encode inference embeddings
@@ -295,6 +298,7 @@ class DownstreamEvalCallback(pl.Callback):
                 transform=DINO_TRANSFORM,
                 num_workers=self.encode_num_workers,
                 control_embeddings=self._inf_control_embeddings,
+                num_samples_control=self.num_samples_control,
             )
 
             # Build mean-pooled features

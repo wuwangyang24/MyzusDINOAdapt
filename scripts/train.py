@@ -332,6 +332,13 @@ def parse_args():
         action="store_true",
         help="Use scale_pos_weight=n_neg/n_pos in XGBoost for downstream eval.",
     )
+    ds.add_argument(
+        "--num-samples-control-downstream",
+        type=int,
+        default=None,
+        help="Max number of control images to encode per plate in downstream eval "
+             "(default: None = use all available).",
+    )
 
     return parser.parse_args()
 
@@ -762,6 +769,7 @@ def main():
             inf_control_embeddings_path=args.downstream_inf_control_embeddings,
             scale_pos_weight=args.downstream_scale_pos_weight,
             ckpt_dir=str(ckpt_subdir),
+            num_samples_control=args.num_samples_control_downstream,
         )
         callbacks.append(downstream_cb)
         logger.info(f"Downstream eval enabled: every {args.downstream_eval_every} steps")

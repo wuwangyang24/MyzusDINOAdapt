@@ -484,6 +484,7 @@ def encode_metadata(
     transform: transforms.Compose = DINO_TRANSFORM,
     num_workers: int = 4,
     control_embeddings: Optional[Dict] = None,
+    num_samples_control: Optional[int] = None,
 ) -> Dict:
     """
     Iterate over compounds and plates and build the embedding dictionary.
@@ -561,6 +562,8 @@ def encode_metadata(
             if has_precomputed_ctrl:
                 pass  # will be injected in Phase 3
             elif control_paths:
+                if num_samples_control is not None and len(control_paths) > num_samples_control:
+                    control_paths = control_paths[:num_samples_control]
                 segments.append((compound_id, plate_id, "control", len(control_paths)))
                 all_paths.extend(control_paths)
 
