@@ -241,6 +241,12 @@ def parse_args():
         help="Path to a CSV file with a 'Compound No' column. "
              "Compounds listed in this file will be excluded from the training set.",
     )
+    parser.add_argument(
+        "--ckpt-suffix",
+        type=str,
+        default=None,
+        help="Custom suffix appended to the checkpoint folder name.",
+    )
 
     # ── Downstream efficacy evaluation during training ───────────────
     ds = parser.add_argument_group("Downstream eval (periodic efficacy classification)")
@@ -723,6 +729,8 @@ def main():
         ckpt_tag += "_NormEmb"
     else:
         ckpt_tag += "_NoNormEmb"
+    if args.ckpt_suffix:
+        ckpt_tag += f"_{args.ckpt_suffix}"
     ckpt_subdir = Path(config["checkpoint"]["save_dir"]) / ckpt_tag
     checkpoint_callback = ModelCheckpoint(
         dirpath=str(ckpt_subdir),
