@@ -415,6 +415,10 @@ def _run_xgboost(
         learning_rate=args.xgb_learning_rate,
         subsample=args.xgb_subsample,
         colsample_bytree=args.xgb_colsample_bytree,
+        min_child_weight=args.xgb_min_child_weight,
+        gamma=args.xgb_gamma,
+        reg_alpha=args.xgb_reg_alpha,
+        reg_lambda=args.xgb_reg_lambda,
     )
 
     # ── Optionally use scale_pos_weight ──────────────────────────────────
@@ -480,13 +484,14 @@ def _run_xgboost(
     clf = xgb.XGBClassifier(
         **xgb_params,
         objective="binary:logistic",
+        eval_metric="auc",
         use_label_encoder=False,
         random_state=args.seed,
         device=args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu",
         early_stopping_rounds=args.xgb_early_stopping,
     )
     print(f"\nTraining final XGBoost on all {X_train.shape[0]} training compounds ...")
-    clf.fit(X_train, y_train, eval_set=[(X_train, y_train)], verbose=500)
+    clf.fit(X_train, y_train, eval_set=[(X_inf, y_inf)], verbose=500)
     print("Training done.\n")
 
     inf_preds = clf.predict(X_inf)
