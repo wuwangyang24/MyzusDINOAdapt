@@ -678,8 +678,10 @@ def main():
     if args.use_dcl:
         loss_fn = DCL(
             temperature=args.dcl_temperature,
+            normalize_embeddings=args.normalize_embeddings,
         )
-        logger.info(f"Using Decoupled Contrastive Loss (DCL) with temperature={args.dcl_temperature}")
+        logger.info(f"Using Decoupled Contrastive Loss (DCL) with temperature={args.dcl_temperature}, "
+                    f"normalize_embeddings={args.normalize_embeddings}")
     elif args.repulsion_weight > 0.0:
         loss_fn = TripleCheckBatchLoss(
             distance_metric=args.distance_metric,

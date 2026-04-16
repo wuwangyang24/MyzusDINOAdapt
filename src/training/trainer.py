@@ -200,7 +200,7 @@ class TripleCheckModule(pl.LightningModule):
             feat_t2 = all_feats[base + 2]  # (N, D)
             feat_u2 = all_feats[base + 3]  # (1, D)
 
-            if isinstance(self.loss_fn, TripleCheckBatchLoss):
+            if isinstance(self.loss_fn, (TripleCheckBatchLoss, DCL)):
                 deltas_p1.append(self.loss_fn.compute_deltas(feat_t1, feat_u1))
                 deltas_p2.append(self.loss_fn.compute_deltas(feat_t2, feat_u2))
             else:

@@ -274,10 +274,32 @@ class DCL(object):
     temperature: temperature to control the sharpness of the distribution
     """
 
-    def __init__(self, temperature=0.1, weight_fn=None):
+    def __init__(self, temperature=0.1, weight_fn=None, normalize_embeddings=False):
         super(DCL, self).__init__()
         self.temperature = temperature
         self.weight_fn = weight_fn
+        self.normalize_embeddings = normalize_embeddings
+
+    def compute_deltas(
+        self,
+        features_t: torch.Tensor,
+        features_u: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute mean delta for a single compound-plate pair.
+
+        Args:
+            features_t: (N, D) treated features.
+            features_u: (1, D) or (N, D) control features.
+
+        Returns:
+            (D,) delta vector.
+        """
+        u = features_u.mean(dim=0)
+        if self.normalize_embeddings:
+            features_t = F.normalize(features_t, dim=-1)
+            u = F.normalize(u, dim=-1)
+        return (features_t - u).mean(dim=0)
 
     def __call__(self, z1, z2):
         """
