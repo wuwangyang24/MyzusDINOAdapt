@@ -219,7 +219,16 @@ class TripleCheckModule(pl.LightningModule):
             # DCL expects L2-normalized embeddings of shape (K, D)
             z1 = F.normalize(deltas_p1_stack.float(), dim=-1)
             z2 = F.normalize(deltas_p2_stack.float(), dim=-1)
-            loss = (self.loss_fn(z1, z2) + self.loss_fn(z2, z1)) / 2
+            loss_12 = self.loss_fn(z1, z2)
+            loss_21 = self.loss_fn(z2, z1)
+            loss = (loss_12 + loss_21) / 2
+            if self.training:
+                self.log("train/dcl_loss_12", loss_12.detach(),
+                         on_step=True, on_epoch=True, rank_zero_only=True,
+                         batch_size=len(compound_indices))
+                self.log("train/dcl_loss_21", loss_21.detach(),
+                         on_step=True, on_epoch=True, rank_zero_only=True,
+                         batch_size=len(compound_indices))
         elif isinstance(self.loss_fn, TripleCheckBatchLoss):
             loss, align_loss, repel_loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
             if self.training:
