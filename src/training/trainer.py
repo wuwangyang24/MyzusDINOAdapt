@@ -11,7 +11,7 @@ import pytorch_lightning as pl
 
 warnings.filterwarnings("ignore", message=".*lr_scheduler.step.*optimizer.step.*")
 
-from src.losses import TripleCheckLoss, TripleCheckBatchLoss
+from src.losses import TripleCheckLoss, TripleCheckBatchLoss, DCL
 
 
 class TripleCheckModule(pl.LightningModule):
@@ -215,7 +215,12 @@ class TripleCheckModule(pl.LightningModule):
         deltas_p2_stack = torch.stack(deltas_p2, dim=0)  # (K, D)
 
         # Compute loss
-        if isinstance(self.loss_fn, TripleCheckBatchLoss):
+        if isinstance(self.loss_fn, DCL):
+            # DCL expects L2-normalized embeddings of shape (K, D)
+            z1 = F.normalize(deltas_p1_stack.float(), dim=-1)
+            z2 = F.normalize(deltas_p2_stack.float(), dim=-1)
+            loss = (self.loss_fn(z1, z2) + self.loss_fn(z2, z1)) / 2
+        elif isinstance(self.loss_fn, TripleCheckBatchLoss):
             loss, align_loss, repel_loss = self.loss_fn(deltas_p1_stack, deltas_p2_stack)
             if self.training:
                 self.log("train/align_loss", align_loss.detach(),

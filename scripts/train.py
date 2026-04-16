@@ -14,7 +14,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models import DINOWithLoRA, LoRAConfig, DINOWithDoRA, DoRAConfig
-from src.losses import TripleCheckLoss, TripleCheckBatchLoss
+from src.losses import TripleCheckLoss, TripleCheckBatchLoss, DCL
 from src.data import CompoundPlateDataset, auto_create_compound_plate_metadata, get_default_transforms, compound_collate_fn
 from src.training import TripleCheckModule
 from src.training.downstream_eval import DownstreamEvalCallback
@@ -130,6 +130,17 @@ def parse_args():
         action="store_true",
         help="Add explicit alignment loss on top of InfoNCE. "
              "Without this flag, pure InfoNCE is used (alignment is implicit)."
+    )
+    parser.add_argument(
+        "--use-dcl",
+        action="store_true",
+        help="Use Decoupled Contrastive Loss (DCL) on per-compound deltas."
+    )
+    parser.add_argument(
+        "--dcl-temperature",
+        type=float,
+        default=0.1,
+        help="Temperature for DCL loss. Default: 0.1"
     )
     parser.add_argument(
         "--device",
@@ -664,7 +675,12 @@ def main():
         )
 
     # Create loss function and Lightning module
-    if args.repulsion_weight > 0.0:
+    if args.use_dcl:
+        loss_fn = DCL(
+            temperature=args.dcl_temperature,
+        )
+        logger.info(f"Using Decoupled Contrastive Loss (DCL) with temperature={args.dcl_temperature}")
+    elif args.repulsion_weight > 0.0:
         loss_fn = TripleCheckBatchLoss(
             distance_metric=args.distance_metric,
             temperature=args.repulsion_temperature,
