@@ -46,13 +46,16 @@ def _get_plate_pairs(
 ) -> List[Tuple[str, str, str]]:
     """
     Return (compound_id, plate1, plate2) for compounds that have
-    exactly two plates in the embeddings dict.
+    at least two plates with both 'treated' and 'control' keys.
     """
     pairs = []
     for cid in compound_ids:
         if cid not in embeddings:
             continue
-        plates = sorted(embeddings[cid].keys())
+        plates = sorted(
+            p for p in embeddings[cid]
+            if "treated" in embeddings[cid][p] and "control" in embeddings[cid][p]
+        )
         if len(plates) >= 2:
             pairs.append((cid, plates[0], plates[1]))
     return pairs
