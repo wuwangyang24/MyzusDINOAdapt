@@ -31,6 +31,7 @@ from typing import Dict, List, Tuple
 import pandas as pd
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 
 def load_compound_list(csv_path: str) -> List[str]:
@@ -87,7 +88,7 @@ def compute_similarities(
 
     compound_labels: List[str] = []
 
-    for cid, p1, p2 in pairs:
+    for cid, p1, p2 in tqdm(pairs, desc="Computing per-compound similarities"):
         treated_p1 = embeddings[cid][p1]["treated"].float()  # (N1, D)
         treated_p2 = embeddings[cid][p2]["treated"].float()  # (N2, D)
         control_p1 = embeddings[cid][p1]["control"].float()  # (D,)
@@ -119,7 +120,7 @@ def compute_similarities(
         plate_means_stack = torch.stack(plate_means, dim=0)  # (K, D)
         plate_means_norm = F.normalize(plate_means_stack, dim=-1)
         cos_matrix = torch.mm(plate_means_norm, plate_means_norm.T)  # (K, K)
-        for j in range(len(plate_means)):
+        for j in tqdm(range(len(plate_means)), desc="Inter raw cos sim"):
             mask = torch.ones(len(plate_means), dtype=torch.bool)
             mask[j] = False
             inter_cos_sims.append(cos_matrix[j][mask].mean().item())
@@ -138,7 +139,7 @@ def compute_similarities(
         mean_deltas = ((deltas_p1_stack + deltas_p2_stack) / 2.0)  # (K, D)
         mean_deltas_norm = F.normalize(mean_deltas, dim=-1)
         delta_cos_matrix = torch.mm(mean_deltas_norm, mean_deltas_norm.T)  # (K, K)
-        for j in range(K):
+        for j in tqdm(range(K), desc="Inter delta cos sim"):
             mask = torch.ones(K, dtype=torch.bool)
             mask[j] = False
             inter_delta_cos_sims.append(delta_cos_matrix[j][mask].mean().item())
