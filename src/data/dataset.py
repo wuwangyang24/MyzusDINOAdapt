@@ -76,6 +76,7 @@ class CompoundPlateDataset(Dataset):
         num_plates: int = 0,
         max_samples: int = 0,
         control_embeddings: Optional[Dict] = None,
+        subtract_control: bool = True,
     ):
         """
         Initialize compound-plate dataset.
@@ -91,6 +92,8 @@ class CompoundPlateDataset(Dataset):
                 file. Structure: {compound_id: {plate_id: {"control": Tensor(D,)}}}.
                 When provided, control features are looked up from this dict instead of
                 loading and transforming control images.
+            subtract_control: If True (default), load and use control embeddings/images.
+                If False, skip all control loading so only treated features are returned.
         """
         self.root_dir = Path(root_dir)
         self.transform = transform
@@ -98,6 +101,7 @@ class CompoundPlateDataset(Dataset):
         self.num_plates = num_plates
         self.max_samples = max_samples
         self.control_embeddings = control_embeddings
+        self.subtract_control = subtract_control
         
         if compounds_list is not None:
             self.compounds = compounds_list
@@ -123,18 +127,19 @@ class CompoundPlateDataset(Dataset):
         # Filter to compounds with >= 2 valid plates (both treated & control)
         self.compounds = [
             c for c in self.compounds
-            if self._count_valid_plates(c) >= 2
+            if self._count_valid_plates(c, require_control=self.subtract_control) >= 2
         ]
     
     @staticmethod
-    def _count_valid_plates(compound: dict) -> int:
-        """Count plates that have both 'treated' and 'control' keys."""
+    def _count_valid_plates(compound: dict, require_control: bool = True) -> int:
+        """Count plates that have 'treated' (and optionally 'control') keys."""
         count = 0
         for key, val in compound.items():
             if key in ("Compound", "id"):
                 continue
-            if isinstance(val, dict) and "treated" in val and "control" in val:
-                count += 1
+            if isinstance(val, dict) and "treated" in val:
+                if not require_control or "control" in val:
+                    count += 1
         return count
 
     def __len__(self) -> int:
@@ -189,6 +194,10 @@ class CompoundPlateDataset(Dataset):
                 if sample_type not in plate_data:
                     continue
 
+                # Skip control entirely when subtract_control is disabled
+                if sample_type == "control" and not self.subtract_control:
+                    continue
+
                 # Use pre-computed control embeddings when available
                 if sample_type == "control" and self.control_embeddings is not None:
                     cid = str(compound_id)
@@ -221,11 +230,17 @@ class CompoundPlateDataset(Dataset):
                 if images:
                     plates_data[plate_name][sample_type] = torch.stack(images)
         
-        # Keep only plates that have both treated and control
-        plates_data = {
-            pname: pdata for pname, pdata in plates_data.items()
-            if "treated" in pdata and "control" in pdata
-        }
+        # Keep only plates that have required keys
+        if self.subtract_control:
+            plates_data = {
+                pname: pdata for pname, pdata in plates_data.items()
+                if "treated" in pdata and "control" in pdata
+            }
+        else:
+            plates_data = {
+                pname: pdata for pname, pdata in plates_data.items()
+                if "treated" in pdata
+            }
         
         return {
             "id": compound_id,

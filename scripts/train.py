@@ -241,6 +241,13 @@ def parse_args():
              "instead of being encoded by the backbone during training.",
     )
     parser.add_argument(
+        "--subtract-control",
+        action="store_true",
+        help="Subtract per-plate control embeddings from treated embeddings "
+             "during training. When not set, control images/embeddings are "
+             "not loaded and treated features are used directly.",
+    )
+    parser.add_argument(
         "--compile",
         action="store_true",
         help="Apply torch.compile to the model for faster training (requires PyTorch 2.0+).",
@@ -521,9 +528,9 @@ def main():
     # since metadata paths already include the subdirectory
     image_root_dir = args.data_root_dir if args.data_root_dir else args.data_dir
 
-    # Load pre-computed control embeddings if specified
+    # Load pre-computed control embeddings if specified (only when subtracting control)
     control_embeddings = None
-    if args.control_embeddings:
+    if args.subtract_control and args.control_embeddings:
         logger.info(f"Loading pre-computed control embeddings")
         control_emb_path = Path(args.control_embeddings)
         if not control_emb_path.exists():
@@ -537,6 +544,8 @@ def main():
                     if isinstance(t, torch.Tensor):
                         control_embeddings[cid][pid][key] = t.detach().clone()
         logger.info(f"Loaded pre-computed control embeddings from: {control_emb_path}")
+    elif not args.subtract_control:
+        logger.info("Control subtraction disabled — skipping control embeddings")
 
     # Create datasets
     logger.info(f"Loading paired bioassay data from: {args.data_dir}")
@@ -562,7 +571,7 @@ def main():
     before = len(all_compounds)
     all_compounds = [
         c for c in all_compounds
-        if CompoundPlateDataset._count_valid_plates(c) >= 2
+        if CompoundPlateDataset._count_valid_plates(c, require_control=args.subtract_control) >= 2
     ]
     if len(all_compounds) < before:
         logger.info(f"Filtered {before - len(all_compounds)} compounds with <2 valid plates ({before} -> {len(all_compounds)})")
@@ -593,6 +602,7 @@ def main():
         num_plates=2,
         max_samples=args.max_samples,
         control_embeddings=control_embeddings,
+        subtract_control=args.subtract_control,
     )
     num_workers = args.num_workers if args.num_workers is not None else config["training"]["num_workers"]
     prefetch = args.prefetch_factor if args.prefetch_factor is not None else (2 if num_workers > 0 else None)
@@ -639,6 +649,7 @@ def main():
             num_plates=2,
             max_samples=args.max_samples,
             control_embeddings=control_embeddings,
+            subtract_control=args.subtract_control,
         )
         val_dataloader = DataLoader(
             val_dataset,
@@ -662,6 +673,7 @@ def main():
             num_plates=2,
             max_samples=args.max_samples,
             control_embeddings=control_embeddings,
+            subtract_control=args.subtract_control,
         )
         val_dataloader = DataLoader(
             val_dataset,
@@ -721,6 +733,7 @@ def main():
         max_samples=args.max_samples,
         warmup_steps=warmup_steps,
         total_steps=total_steps,
+        subtract_control=args.subtract_control,
     )
 
     # --- Callbacks ---

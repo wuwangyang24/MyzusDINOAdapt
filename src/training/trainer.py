@@ -32,6 +32,7 @@ class TripleCheckModule(pl.LightningModule):
         max_samples: int = 4,
         warmup_steps: int = 0,
         total_steps: int = 0,
+        subtract_control: bool = True,
     ):
         """
         Args:
@@ -42,6 +43,8 @@ class TripleCheckModule(pl.LightningModule):
             max_samples: Max images per plate per type per step.
             warmup_steps: Number of linear warmup steps.
             total_steps: Total training steps (for cosine decay).
+            subtract_control: If True, subtract control from treated to form deltas.
+                If False, use treated features directly (no control).
         """
         super().__init__()
         self.model = model
@@ -55,6 +58,7 @@ class TripleCheckModule(pl.LightningModule):
         self.max_samples = max_samples
         self.warmup_steps = warmup_steps
         self.total_steps = total_steps
+        self.subtract_control = subtract_control
         # Save lr / weight_decay to hparams; skip non-serialisable objects
         self.save_hyperparameters(ignore=["model", "loss_fn"])
 
@@ -125,7 +129,8 @@ class TripleCheckModule(pl.LightningModule):
         groups = []
         is_precomputed = []
         for pname in [p1, p2]:
-            for stype in ["treated", "control"]:
+            stypes = ["treated", "control"] if self.subtract_control else ["treated"]
+            for stype in stypes:
                 data = plates[pname][stype]
                 if data.dim() <= 2:
                     # Pre-computed feature embedding: (D,) or (N, D)
@@ -193,19 +198,25 @@ class TripleCheckModule(pl.LightningModule):
         deltas_p1 = []   # plate-1 delta per compound
         deltas_p2 = []   # plate-2 delta per compound
         treated_stds = []
+        stride = 4 if self.subtract_control else 2
         for j in range(len(compound_indices)):
-            base = j * 4
+            base = j * stride
             feat_t1 = all_feats[base]      # (N, D)
-            feat_u1 = all_feats[base + 1]  # (1, D)
-            feat_t2 = all_feats[base + 2]  # (N, D)
-            feat_u2 = all_feats[base + 3]  # (1, D)
+            feat_t2 = all_feats[base + (2 if self.subtract_control else 1)]  # (N, D)
 
-            if isinstance(self.loss_fn, (TripleCheckBatchLoss, DCL)):
-                deltas_p1.append(self.loss_fn.compute_deltas(feat_t1, feat_u1))
-                deltas_p2.append(self.loss_fn.compute_deltas(feat_t2, feat_u2))
+            if self.subtract_control:
+                feat_u1 = all_feats[base + 1]  # (1, D)
+                feat_u2 = all_feats[base + 3]  # (1, D)
+                if isinstance(self.loss_fn, (TripleCheckBatchLoss, DCL)):
+                    deltas_p1.append(self.loss_fn.compute_deltas(feat_t1, feat_u1))
+                    deltas_p2.append(self.loss_fn.compute_deltas(feat_t2, feat_u2))
+                else:
+                    deltas_p1.append((feat_t1.float() - feat_u1.float().mean(dim=0)).mean(dim=0))
+                    deltas_p2.append((feat_t2.float() - feat_u2.float().mean(dim=0)).mean(dim=0))
             else:
-                deltas_p1.append((feat_t1.float() - feat_u1.float().mean(dim=0)).mean(dim=0))
-                deltas_p2.append((feat_t2.float() - feat_u2.float().mean(dim=0)).mean(dim=0))
+                # No control subtraction: use mean of treated features directly
+                deltas_p1.append(feat_t1.float().mean(dim=0))
+                deltas_p2.append(feat_t2.float().mean(dim=0))
 
             # Per-compound std of treated embeddings (across both plates)
             all_treated = torch.cat([feat_t1.float(), feat_t2.float()], dim=0)
@@ -242,11 +253,21 @@ class TripleCheckModule(pl.LightningModule):
             # Legacy per-compound loss
             losses = []
             for j in range(len(compound_indices)):
-                base = j * 4
-                losses.append(self.loss_fn(
-                    all_feats[base], all_feats[base + 1],
-                    all_feats[base + 2], all_feats[base + 3],
-                ))
+                base = j * stride
+                if self.subtract_control:
+                    losses.append(self.loss_fn(
+                        all_feats[base], all_feats[base + 1],
+                        all_feats[base + 2], all_feats[base + 3],
+                    ))
+                else:
+                    # Pass zeros as control so delta = treated_mean - 0
+                    zero_ctrl = torch.zeros(1, all_feats[base].shape[-1],
+                                            device=all_feats[base].device,
+                                            dtype=all_feats[base].dtype)
+                    losses.append(self.loss_fn(
+                        all_feats[base], zero_ctrl,
+                        all_feats[base + 1], zero_ctrl,
+                    ))
             loss = torch.stack(losses).mean()
 
         # Log diagnostics on the same schedule as PL's log_every_n_steps
@@ -264,9 +285,9 @@ class TripleCheckModule(pl.LightningModule):
                 # Mean norm of treated embeddings across all compounds
                 treated_norms = []
                 for j in range(len(compound_indices)):
-                    base = j * 4
+                    base = j * stride
                     treated_norms.append(all_feats[base].float().norm(p=2, dim=1).mean().item())
-                    treated_norms.append(all_feats[base + 2].float().norm(p=2, dim=1).mean().item())
+                    treated_norms.append(all_feats[base + (2 if self.subtract_control else 1)].float().norm(p=2, dim=1).mean().item())
                 self.log("diag/treated_norm_mean", sum(treated_norms) / len(treated_norms),
                          on_step=True, on_epoch=False, rank_zero_only=True,
                          batch_size=len(compound_indices))
@@ -275,9 +296,9 @@ class TripleCheckModule(pl.LightningModule):
                 intra_cos_sims = []
                 plate_means = []  # (K, D) — per-compound average of both plate means
                 for j in range(len(compound_indices)):
-                    base = j * 4
+                    base = j * stride
                     mean_p1 = all_feats[base].float().mean(dim=0)      # (D,)
-                    mean_p2 = all_feats[base + 2].float().mean(dim=0)  # (D,)
+                    mean_p2 = all_feats[base + (2 if self.subtract_control else 1)].float().mean(dim=0)  # (D,)
                     intra_cos_sims.append(
                         F.cosine_similarity(mean_p1.unsqueeze(0), mean_p2.unsqueeze(0)).item()
                     )
