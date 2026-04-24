@@ -463,7 +463,7 @@ def _run_xgboost(
             objective="binary:logistic",
             eval_metric="auc",
             use_label_encoder=False,
-            random_state=args.seed,
+            random_state=fold_idx,
             device=args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu",
             early_stopping_rounds=args.xgb_early_stopping,
         )
