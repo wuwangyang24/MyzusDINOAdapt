@@ -455,8 +455,8 @@ def _run_xgboost(
     fold_aurocs = []
 
     for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+        X_tr, X_va = X_train, X_train[va_idx]
+        y_tr, y_va = y_train, y_train[va_idx]
 
         fold_clf = xgb.XGBClassifier(
             **xgb_params,
