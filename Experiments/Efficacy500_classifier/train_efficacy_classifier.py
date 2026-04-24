@@ -469,16 +469,11 @@ def _run_xgboost(
         )
         fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
 
-        va_preds = fold_clf.predict(X_va)
         va_proba = fold_clf.predict_proba(X_va)[:, 1]
-        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
-        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
         fold_aurocs.append(roc_auc_score(y_va, va_proba))
-        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
+        print(f"  Fold {fold_idx}: AUROC={fold_aurocs[-1]:.4f}")
 
-    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
-          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
-          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
+    print(f"  Mean : AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
     # ── Train final model on all training data ───────────────────────────
     clf = xgb.XGBClassifier(
@@ -590,16 +585,11 @@ def _run_catboost(
         )
         fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
 
-        va_preds = fold_clf.predict(X_va).astype(int).ravel()
         va_proba = fold_clf.predict_proba(X_va)[:, 1]
-        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
-        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
         fold_aurocs.append(roc_auc_score(y_va, va_proba))
-        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
+        print(f"  Fold {fold_idx}: AUROC={fold_aurocs[-1]:.4f}")
 
-    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
-          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
-          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
+    print(f"  Mean : AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
     # ── Train final model on all training data ───────────────────────────
     clf = CatBoostClassifier(
