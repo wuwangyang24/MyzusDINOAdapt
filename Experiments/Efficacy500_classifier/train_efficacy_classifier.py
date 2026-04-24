@@ -452,11 +452,11 @@ def _run_xgboost(
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
     print("\n5-Fold Cross Validation on training data ...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
-    fold_accs, fold_f1s, fold_aurocs = [], [], []
+    fold_aurocs = []
 
-    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+    for fold_idx, (_, va_idx) in enumerate(skf.split(X_inf, y_inf), 1):
+        X_va = X_inf[va_idx]
+        y_va = y_inf[va_idx]
 
         fold_clf = xgb.XGBClassifier(
             **xgb_params,
@@ -467,7 +467,7 @@ def _run_xgboost(
             device=args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu",
             early_stopping_rounds=args.xgb_early_stopping,
         )
-        fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+        fold_clf.fit(X_train, y_train, eval_set=[(X_va, y_va)], verbose=False)
 
         va_proba = fold_clf.predict_proba(X_va)[:, 1]
         fold_aurocs.append(roc_auc_score(y_va, va_proba))
@@ -565,13 +565,13 @@ def _run_catboost(
         print(f"  Saved best params to {params_path}")
 
     # ── 5-Fold Cross Validation ──────────────────────────────────────────
-    print("\n5-Fold Cross Validation on training data ...")
+    print("\n5-Fold Cross Validation on inference data ...")
     skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
-    fold_accs, fold_f1s, fold_aurocs = [], [], []
+    fold_aurocs = []
 
-    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+    for fold_idx, (_, va_idx) in enumerate(skf.split(X_inf, y_inf), 1):
+        X_va = X_inf[va_idx]
+        y_va = y_inf[va_idx]
 
         fold_clf = CatBoostClassifier(
             **cb_params,
@@ -583,7 +583,7 @@ def _run_catboost(
             devices=args.device.split(":")[1] if args.device.startswith("cuda") and torch.cuda.is_available() else None,
             early_stopping_rounds=args.cb_early_stopping,
         )
-        fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
+        fold_clf.fit(X_train, y_train, eval_set=(X_va, y_va), verbose=False)
 
         va_proba = fold_clf.predict_proba(X_va)[:, 1]
         fold_aurocs.append(roc_auc_score(y_va, va_proba))
