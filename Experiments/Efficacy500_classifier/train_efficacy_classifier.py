@@ -264,13 +264,6 @@ def parse_args() -> argparse.Namespace:
         help="Output directory (default: Experiments/runs/EFFICACY_CLASSIFIER)",
     )
     p.add_argument("--seed", type=int, default=42, help="Random seed (default: 42)")
-    p.add_argument(
-        "--cv_seeds",
-        type=int,
-        nargs="+",
-        default=[42, 123, 456, 789, 1024],
-        help="Seeds for repeated 5-fold CV (default: 42 123 456 789 1024)",
-    )
     p.add_argument("--device", type=str, default="cuda:0", help="Device to use, e.g. 'cuda:0', 'cuda:1', 'cpu' (default: cuda:0)")
 
     return p.parse_args()
@@ -456,40 +449,36 @@ def _run_xgboost(
                 f.write(f"{k}: {v}\n")
         print(f"  Saved best params to {params_path}")
 
-    # ── 5-Fold Cross Validation with multiple seeds ────────────────────
-    cv_seeds = args.cv_seeds
-    n_runs = len(cv_seeds) * 5
-    print(f"\n5-Fold Cross Validation on training data ({len(cv_seeds)} seeds × 5 folds = {n_runs} runs) ...")
-    all_accs, all_f1s, all_aurocs = [], [], []
+    # ── 5-Fold Cross Validation ──────────────────────────────────────────
+    print("\n5-Fold Cross Validation on training data ...")
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    fold_accs, fold_f1s, fold_aurocs = [], [], []
 
-    for seed in cv_seeds:
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-        for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-            X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-            y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
+        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
 
-            fold_clf = xgb.XGBClassifier(
-                **xgb_params,
-                objective="binary:logistic",
-                eval_metric="auc",
-                use_label_encoder=False,
-                random_state=seed,
-                device=args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu",
-                early_stopping_rounds=args.xgb_early_stopping,
-            )
-            fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
+        fold_clf = xgb.XGBClassifier(
+            **xgb_params,
+            objective="binary:logistic",
+            eval_metric="auc",
+            use_label_encoder=False,
+            random_state=args.seed,
+            device=args.device if torch.cuda.is_available() or not args.device.startswith("cuda") else "cpu",
+            early_stopping_rounds=args.xgb_early_stopping,
+        )
+        fold_clf.fit(X_tr, y_tr, eval_set=[(X_va, y_va)], verbose=False)
 
-            va_preds = fold_clf.predict(X_va)
-            va_proba = fold_clf.predict_proba(X_va)[:, 1]
-            all_accs.append(balanced_accuracy_score(y_va, va_preds))
-            all_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
-            all_aurocs.append(roc_auc_score(y_va, va_proba))
-            print(f"  Seed {seed}, Fold {fold_idx}: Acc={all_accs[-1]:.4f}  F1={all_f1s[-1]:.4f}  AUROC={all_aurocs[-1]:.4f}")
+        va_preds = fold_clf.predict(X_va)
+        va_proba = fold_clf.predict_proba(X_va)[:, 1]
+        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
+        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
+        fold_aurocs.append(roc_auc_score(y_va, va_proba))
+        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
 
-    print(f"  Overall ({n_runs} runs): "
-          f"Acc={np.mean(all_accs):.4f} +/- {np.std(all_accs):.4f}  "
-          f"F1={np.mean(all_f1s):.4f} +/- {np.std(all_f1s):.4f}  "
-          f"AUROC={np.mean(all_aurocs):.4f} +/- {np.std(all_aurocs):.4f}")
+    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
+          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
+          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
     # ── Train final model on all training data ───────────────────────────
     clf = xgb.XGBClassifier(
@@ -580,41 +569,37 @@ def _run_catboost(
                 f.write(f"{k}: {v}\n")
         print(f"  Saved best params to {params_path}")
 
-    # ── 5-Fold Cross Validation with multiple seeds ────────────────────
-    cv_seeds = args.cv_seeds
-    n_runs = len(cv_seeds) * 5
-    print(f"\n5-Fold Cross Validation on training data ({len(cv_seeds)} seeds × 5 folds = {n_runs} runs) ...")
-    all_accs, all_f1s, all_aurocs = [], [], []
+    # ── 5-Fold Cross Validation ──────────────────────────────────────────
+    print("\n5-Fold Cross Validation on training data ...")
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=args.seed)
+    fold_accs, fold_f1s, fold_aurocs = [], [], []
 
-    for seed in cv_seeds:
-        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=seed)
-        for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
-            X_tr, X_va = X_train[tr_idx], X_train[va_idx]
-            y_tr, y_va = y_train[tr_idx], y_train[va_idx]
+    for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(X_train, y_train), 1):
+        X_tr, X_va = X_train[tr_idx], X_train[va_idx]
+        y_tr, y_va = y_train[tr_idx], y_train[va_idx]
 
-            fold_clf = CatBoostClassifier(
-                **cb_params,
-                loss_function="Logloss",
-                eval_metric="AUC",
-                random_seed=seed,
-                verbose=0,
-                task_type="GPU" if args.device.startswith("cuda") and torch.cuda.is_available() else "CPU",
-                devices=args.device.split(":")[1] if args.device.startswith("cuda") and torch.cuda.is_available() else None,
-                early_stopping_rounds=args.cb_early_stopping,
-            )
-            fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
+        fold_clf = CatBoostClassifier(
+            **cb_params,
+            loss_function="Logloss",
+            eval_metric="AUC",
+            random_seed=args.seed,
+            verbose=0,
+            task_type="GPU" if args.device.startswith("cuda") and torch.cuda.is_available() else "CPU",
+            devices=args.device.split(":")[1] if args.device.startswith("cuda") and torch.cuda.is_available() else None,
+            early_stopping_rounds=args.cb_early_stopping,
+        )
+        fold_clf.fit(X_tr, y_tr, eval_set=(X_va, y_va), verbose=False)
 
-            va_preds = fold_clf.predict(X_va).astype(int).ravel()
-            va_proba = fold_clf.predict_proba(X_va)[:, 1]
-            all_accs.append(balanced_accuracy_score(y_va, va_preds))
-            all_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
-            all_aurocs.append(roc_auc_score(y_va, va_proba))
-            print(f"  Seed {seed}, Fold {fold_idx}: Acc={all_accs[-1]:.4f}  F1={all_f1s[-1]:.4f}  AUROC={all_aurocs[-1]:.4f}")
+        va_preds = fold_clf.predict(X_va).astype(int).ravel()
+        va_proba = fold_clf.predict_proba(X_va)[:, 1]
+        fold_accs.append(balanced_accuracy_score(y_va, va_preds))
+        fold_f1s.append(f1_score(y_va, va_preds, average="weighted", zero_division=0))
+        fold_aurocs.append(roc_auc_score(y_va, va_proba))
+        print(f"  Fold {fold_idx}: Acc={fold_accs[-1]:.4f}  F1={fold_f1s[-1]:.4f}  AUROC={fold_aurocs[-1]:.4f}")
 
-    print(f"  Overall ({n_runs} runs): "
-          f"Acc={np.mean(all_accs):.4f} +/- {np.std(all_accs):.4f}  "
-          f"F1={np.mean(all_f1s):.4f} +/- {np.std(all_f1s):.4f}  "
-          f"AUROC={np.mean(all_aurocs):.4f} +/- {np.std(all_aurocs):.4f}")
+    print(f"  Mean : Acc={np.mean(fold_accs):.4f} +/- {np.std(fold_accs):.4f}  "
+          f"F1={np.mean(fold_f1s):.4f} +/- {np.std(fold_f1s):.4f}  "
+          f"AUROC={np.mean(fold_aurocs):.4f} +/- {np.std(fold_aurocs):.4f}")
 
     # ── Train final model on all training data ───────────────────────────
     clf = CatBoostClassifier(
